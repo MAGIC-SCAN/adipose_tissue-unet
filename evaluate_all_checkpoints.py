@@ -239,23 +239,44 @@ class CheckpointBatchEvaluator:
                 cmd.append('--no-visualizations')
             
             print(f"      🔧 Running: {' '.join(cmd)}")
+            print(f"      📊 Streaming output in real-time...")
+            print("-" * 80)
             
-            # Run evaluation
-            process_result = subprocess.run(
+            # Run evaluation with proper output handling using Popen
+            process = subprocess.Popen(
                 cmd,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # Merge stderr into stdout
                 text=True,
-                timeout=3600,  # 1 hour timeout
+                bufsize=1,  # Line buffered
                 cwd=os.getcwd()
             )
             
-            if process_result.returncode == 0:
-                print(f"      ✅ Evaluation completed successfully")
-                result['status'] = 'completed'
-            else:
-                print(f"      ❌ Evaluation failed (return code {process_result.returncode})")
-                result['status'] = 'failed'
-                result['error'] = f"Process failed with return code {process_result.returncode}"
+            # Stream output line by line in real-time
+            try:
+                for line in iter(process.stdout.readline, ''):
+                    if line:
+                        print(line, end='')  # Already has newline
+                
+                # Wait for process to complete
+                return_code = process.wait(timeout=3600)  # 1 hour timeout
+                
+                print("-" * 80)
+                if return_code == 0:
+                    print(f"      ✅ Evaluation completed successfully")
+                    result['status'] = 'completed'
+                else:
+                    print(f"      ❌ Evaluation failed (return code {return_code})")
+                    result['status'] = 'failed'
+                    result['error'] = f"Process failed with return code {return_code}"
+                    
+            finally:
+                # Ensure streams are closed
+                if process.stdout:
+                    process.stdout.close()
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
         
         except subprocess.TimeoutExpired:
             result['status'] = 'timeout'
@@ -522,7 +543,7 @@ After evaluation, automatically runs visualize_checkpoint_metrics.py to generate
     
     # Processing options
     parser.add_argument('--parallel', action='store_true', default=False,
-                       help='Enable parallel processing')
+                       help='Enable parallel processing (default: False for stability)')
     parser.add_argument('--max-workers', type=int, default=2,
                        help='Max parallel workers (default: 2)')
     

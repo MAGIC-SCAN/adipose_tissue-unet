@@ -261,6 +261,138 @@ def augment_pair_light(image, mask, rng=np.random):
     return image.astype(np.float32), mask.astype(np.float32)
 
 
+def augment_pair_tta_style(image, mask, rng=np.random):
+    """
+    TTA-mimicking augmentation for training.
+    Combines systematic TTA geometric transforms with conservative photometric augmentation.
+    
+    Philosophy:
+    - Apply ONE of 8 TTA transformations systematically (not randomly)
+    - Ensures model sees all geometric variations that TTA uses
+    - Add moderate photometric augmentation for robustness
+    - Avoid aggressive transforms that could mislead the model
+    
+    Use cases:
+    - When TTA shows large performance gains at test time
+    - Want training to match test-time augmentation strategy
+    - Need consistent geometric coverage across epochs
+    - Medium to large datasets (200+ tiles)
+    
+    Expected benefits:
+    - 8x geometric coverage (TTA transforms)
+    - 2-3x photometric coverage (brightness/contrast/gamma)
+    - ~1.5x scale coverage (conservative scaling)
+    - Total: ~24-36x effective dataset size
+    
+    Args:
+        image: Input image
+        mask: Input mask
+        rng: Random number generator
+        
+    Returns:
+        Augmented image and mask
+    """
+    # CORE: Systematic TTA geometric transform (always applied)
+    # Choose one of 8 transformations deterministically
+    transform_id = rng.randint(0, 8)
+    
+    if transform_id == 0:  # Original (no change)
+        pass
+    elif transform_id == 1:  # Rotate 90°
+        image, mask = np.rot90(image, 1), np.rot90(mask, 1)
+    elif transform_id == 2:  # Rotate 180°
+        image, mask = np.rot90(image, 2), np.rot90(mask, 2)
+    elif transform_id == 3:  # Rotate 270°
+        image, mask = np.rot90(image, 3), np.rot90(mask, 3)
+    elif transform_id == 4:  # Horizontal flip
+        image, mask = np.fliplr(image), np.fliplr(mask)
+    elif transform_id == 5:  # Horizontal flip + Rotate 90°
+        image, mask = np.fliplr(image), np.fliplr(mask)
+        image, mask = np.rot90(image, 1), np.rot90(mask, 1)
+    elif transform_id == 6:  # Horizontal flip + Rotate 180°
+        image, mask = np.fliplr(image), np.fliplr(mask)
+        image, mask = np.rot90(image, 2), np.rot90(mask, 2)
+    else:  # transform_id == 7: Horizontal flip + Rotate 270°
+        image, mask = np.fliplr(image), np.fliplr(mask)
+        image, mask = np.rot90(image, 3), np.rot90(mask, 3)
+    
+    # Conservative scale augmentation (30% chance, narrow range)
+    # Handles slight zoom variations that TTA doesn't cover
+    if rng.random() > 0.7:
+        image, mask = random_scale(image, mask, 
+                                   scale_range=(0.95, 1.05), 
+                                   prob=1.0, rng=rng)
+    
+    # Photometric augmentations (moderate probability)
+    # Addresses intensity variations TTA doesn't handle
+    if rng.random() > 0.4:  # 60% chance
+        image = random_brightness(image, factor_range=(0.85, 1.15), rng=rng)
+    if rng.random() > 0.4:  # 60% chance
+        image = random_contrast(image, factor_range=(0.85, 1.15), rng=rng)
+    if rng.random() > 0.5:  # 50% chance
+        image = random_gamma(image, gamma_range=(0.85, 1.15), rng=rng)
+    
+    # Light blur (15% chance, mild sigma)
+    # Simulates slight out-of-focus or compression artifacts
+    image = random_gaussian_blur(image, sigma_range=(0, 0.7), prob=0.15, rng=rng)
+    
+    return image.astype(np.float32), mask.astype(np.float32)
+
+
+def augment_grayscale_tile_classification(image, rng=np.random):
+    """
+    Augmentation pipeline for grayscale classification tiles (e.g., 1024x1024 SYBR images).
+    Applies geometry + photometric jitter without requiring a paired mask.
+    """
+    if image.ndim != 2:
+        raise ValueError("augment_grayscale_tile_classification expects a 2D grayscale array.")
+
+    # Geometric transforms: random rotation (0, 90, 180, 270) + optional flips
+    k = rng.randint(0, 4)
+    if k:
+        image = np.rot90(image, k)
+    if rng.random() > 0.5:
+        image = np.fliplr(image)
+    if rng.random() > 0.5:
+        image = np.flipud(image)
+
+    # Mild random scaling (zoom in/out) with reflect padding/cropping
+    if rng.random() > 0.7:
+        scale = rng.uniform(0.95, 1.05)
+        h, w = image.shape
+        new_h, new_w = int(h * scale), int(w * scale)
+        resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        if scale >= 1.0:
+            y0 = (new_h - h) // 2
+            x0 = (new_w - w) // 2
+            image = resized[y0:y0 + h, x0:x0 + w]
+        else:
+            pad_h = h - new_h
+            pad_w = w - new_w
+            image = np.pad(
+                resized,
+                (
+                    (pad_h // 2, pad_h - pad_h // 2),
+                    (pad_w // 2, pad_w - pad_w // 2),
+                ),
+                mode="reflect",
+            )
+
+    # Photometric jitter
+    if rng.random() > 0.4:
+        image = random_brightness(image, factor_range=(0.9, 1.1), rng=rng)
+    if rng.random() > 0.4:
+        image = random_contrast(image, factor_range=(0.9, 1.1), rng=rng)
+    if rng.random() > 0.5:
+        image = random_gamma(image, gamma_range=(0.9, 1.1), rng=rng)
+
+    # Occasional blur/noise
+    image = random_gaussian_blur(image, sigma_range=(0, 0.8), prob=0.15, rng=rng)
+    image = random_gaussian_noise(image, std_range=(0, 5), prob=0.15, rng=rng)
+
+    return image.astype(np.float32)
+
+
 # ---- Utility Functions ----------------------------------------------------
 
 def normalize_image(image, method='percentile', p_low=1, p_high=99, mean=None, std=None):

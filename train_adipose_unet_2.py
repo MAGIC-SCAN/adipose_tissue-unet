@@ -21,6 +21,11 @@ import json
 from datetime import datetime
 import glob
 import re
+import random
+
+# Configure seeding WITHOUT forcing GPU determinism (ResizeNearestNeighborGrad lacks deterministic kernel)
+os.environ['PYTHONHASHSEED'] = str(865)
+os.environ.pop('TF_DETERMINISTIC_OPS', None)
 
 import numpy as np
 import tensorflow as tf
@@ -30,13 +35,14 @@ from src.utils.seed_utils import get_project_seed
 GLOBAL_SEED = get_project_seed()
 np.random.seed(GLOBAL_SEED)
 tf.random.set_seed(GLOBAL_SEED)
+random.seed(GLOBAL_SEED)
 from tensorflow.keras import Model
 from tensorflow.keras import backend as K
 from tensorflow.keras.layers import (
     Input, Conv2D, MaxPooling2D, UpSampling2D, Dropout,
     Concatenate, Lambda, Reshape, Add,
 )
-from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.optimizers import Adam, AdamW
 from tensorflow.keras.callbacks import (
     ModelCheckpoint, ReduceLROnPlateau, EarlyStopping, CSVLogger
 )
@@ -53,7 +59,7 @@ from src.utils.runtime import funcname
 from src.utils.model import dice_coef
 from src.utils.data import (
     augment_pair_light, augment_pair_moderate, augment_pair_heavy,
-    normalize_image
+    augment_pair_tta_style, normalize_image
 )
 
 
@@ -64,7 +70,7 @@ def find_most_recent_build_dir(base_data_root: Path) -> Path:
     Find the most recent _build_* directory or fall back to _build.
     
     Args:
-        base_data_root: The root data directory (e.g., ~/Data_for_ML/Meat_Luci_Tulane)
+        base_data_root: The root data directory (e.g., /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane)
         
     Returns:
         Path to the most recent build directory
@@ -170,8 +176,8 @@ def resolve_data_root(data_root_arg: str) -> Tuple[Path, str]:
         raise FileNotFoundError(
             f"Could not find valid dataset at: {data_root}\n"
             f"Please specify one of:\n"
-            f"  1. Base data directory (e.g., ~/Data_for_ML/Meat_Luci_Tulane)\n"
-            f"  2. Specific build directory (e.g., ~/Data_for_ML/Meat_Luci_Tulane/_build_20241031_124305)\n"
+            f"  1. Base data directory (e.g., /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane)\n"
+            f"  2. Specific build directory (e.g., /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane/_build_20241031_124305)\n"
             f"  3. Any directory containing dataset/train/ and dataset/val/"
         )
 
@@ -225,7 +231,7 @@ def combined_loss_with_focal(y_true, y_pred):
 
 def combined_loss_standard(y_true, y_pred):
     """
-    Standard combined loss (PROVEN default for adipocyte segmentation).
+    Standard combined loss.
     BCE + Dice
     
     Stable and effective for most medical image segmentation tasks.
@@ -477,12 +483,18 @@ class AdiposeUNet:
             layer.trainable = True
         print("Unfrozen all layers for fine-tuning")
     
-    def compile_model(self, lr: float = 1e-4, use_focal_loss: bool = False):
+    def compile_model(self, lr: float = 1e-4, use_focal_loss: bool = False, optimizer_type: str = 'adam'):
         """
-        Compile with PROVEN optimizer (from 0.68 dice model)
-        Using Adam (not AdamW) - it worked better!
+        Compile model with selected optimizer (Adam or AdamW).
         """
-        optimizer = Adam(learning_rate=lr)
+        opt = optimizer_type.lower()
+        if opt == 'adamw':
+            optimizer = AdamW(learning_rate=lr)
+        elif opt == 'adam':
+            optimizer = Adam(learning_rate=lr)
+        else:
+            raise ValueError(f"Unsupported optimizer: {optimizer_type}")
+        
         loss_fn = combined_loss_with_focal if use_focal_loss else combined_loss_standard
         self.net.compile(
             optimizer=optimizer,
@@ -724,6 +736,8 @@ def _select_augment_fn(level: str):
         return augment_pair_light, 'light'
     if lvl == 'heavy':
         return augment_pair_heavy, 'heavy'
+    if lvl == 'tta-style' or lvl == 'tta_style':
+        return augment_pair_tta_style, 'tta-style'
     if lvl in ('none', 'off', 'disable'):
         return None, 'none'
     # default
@@ -735,20 +749,22 @@ def train_model(
     data_root: Path,
     pretrained_weights: str,
     batch_size: int = 2,
-    epochs_phase1: int = 50,
-    epochs_phase2: int = 100,
+    epochs_phase1: int = 75,
+    epochs_phase2: int = 150,
     normalization_method: str = 'zscore',
     percentile_low: float = 1.0,
     percentile_high: float = 99.0,
     use_focal_loss: bool = False,
     build_timestamp: str = None,
     augmentation_level: str = 'moderate',
+    checkpoint_suffix: str = '',
+    optimizer_type: str = 'adam',
 ):
     """
-    Two-phase training with PROVEN architecture + IMPROVED callbacks
+    Two-phase training
     """
     
-    print("✓ Using float32 precision (proven stable)")
+    print("✓ Using float32 precision")
     
     # Setup data
     data_root = Path(data_root)
@@ -809,17 +825,23 @@ def train_model(
     if normalization_method == 'percentile':
         norm_display += f" ({percentile_low}-{percentile_high})"
     elif normalization_method == 'zscore':
-        norm_display += " (proven)"
+        norm_display
     print(f"  Normalization: {norm_display}")
-    print(f"  Architecture: 2-ch softmax (proven)")
-    loss_display = "BCE + Dice + 0.5*Focal" if use_focal_loss else "BCE + Dice (proven)"
+    print(f"  Architecture: 2-ch softmax")
+    loss_display = "BCE + Dice + 0.5*Focal" if use_focal_loss else "BCE + Dice"
     print(f"  Loss: {loss_display}")
     print(f"{'='*60}\n")
     
-    # Build model with PROVEN architecture
-    model = AdiposeUNet("adipose_sybreosin", freeze_encoder=True, build_timestamp=build_timestamp)
+    # Build model
+    checkpoint_base = "adipose_sybreosin"
+    if checkpoint_suffix:
+        checkpoint_name = f"{checkpoint_base}{checkpoint_suffix}"
+    else:
+        checkpoint_name = checkpoint_base
+    
+    model = AdiposeUNet(checkpoint_name, freeze_encoder=True, build_timestamp=build_timestamp)
     model.build_model(init_nb=44, dropout_rate=0.3)
-    model.compile_model(lr=1e-4, use_focal_loss=use_focal_loss)
+    model.compile_model(lr=1e-4, use_focal_loss=use_focal_loss, optimizer_type=optimizer_type)
     
     # --- Save normalization statistics for inference reproducibility ---
     normalization_stats = {
@@ -868,7 +890,8 @@ def train_model(
         "percentile_high": percentile_high,
         "use_focal_loss": use_focal_loss,
         "build_timestamp": build_timestamp,
-        "augmentation_level": augmentation_level
+        "augmentation_level": augmentation_level,
+        "optimizer": optimizer_type,
     }
     
     data_config = {
@@ -900,7 +923,7 @@ def train_model(
         "total_parameters": model.net.count_params(),
         "trainable_parameters": trainable_params,            # ← fixed
         "non_trainable_parameters": non_trainable_params,
-        "optimizer": "Adam",
+        "optimizer": optimizer_type.upper(),
         "loss_function": "combined_loss_with_focal" if use_focal_loss else "combined_loss_standard",
         "metrics": ["dice_coefficient", "binary_accuracy"]
     }
@@ -1005,7 +1028,7 @@ def train_model(
         print("WARNING: Best Phase 1 weights not found, using last epoch weights\n")
     
     model.unfreeze_encoder()
-    model.compile_model(lr=1e-5)  # FIXED: 10x lower LR
+    model.compile_model(lr=1e-5, optimizer_type=optimizer_type)  # FIXED: 10x lower LR
     
     callbacks_phase2 = [
         ModelCheckpoint(
@@ -1084,7 +1107,7 @@ def main():
     parser.add_argument(
         '--data-root',
         type=str,
-        default='~/Data_for_ML/Meat_Luci_Tulane',
+        default='/home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane',
         help='Base data directory (auto-finds most recent _build_*) or specific build directory'
     )
     parser.add_argument(
@@ -1140,8 +1163,21 @@ def main():
         '--augmentation-level',
         type=str,
         default='moderate',
-        choices=['none', 'light', 'moderate', 'heavy'],
-        help='Augmentation intensity for training tiles'
+        choices=['none', 'light', 'moderate', 'heavy', 'tta-style'],
+        help='Augmentation intensity for training tiles. tta-style mimics TTA transformations.'
+    )
+    parser.add_argument(
+        '--checkpoint-suffix',
+        type=str,
+        default='',
+        help='Optional suffix for checkpoint folder name (e.g., "_perc" for percentile normalization)'
+    )
+    parser.add_argument(
+        '--optimizer',
+        type=str,
+        default='adam',
+        choices=['adam', 'adamw'],
+        help='Optimizer to use (default: adam)'
     )
     
     args = parser.parse_args()
@@ -1166,6 +1202,8 @@ def main():
         use_focal_loss=args.use_focal_loss,
         build_timestamp=build_timestamp,
         augmentation_level=args.augmentation_level,
+        checkpoint_suffix=args.checkpoint_suffix,
+        optimizer_type=args.optimizer,
     )
     
     print("\n✓ Training complete! Use the best model for inference:")

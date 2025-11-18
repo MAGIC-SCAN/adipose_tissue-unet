@@ -1,6 +1,7 @@
 # Data and annotation directories
 montage_imgs/
 ground_truth_annotations/
+data
 
 # Model checkpoints (large files)
 checkpoints/

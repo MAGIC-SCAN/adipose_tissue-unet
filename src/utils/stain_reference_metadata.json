@@ -7,7 +7,7 @@
   },
   "selected_reference": {
     "name": "12.12 Beef Shoulder 3_grid_5x5_r7_c0.jpg",
-    "path": "/home/luci/Data_for_ML/Meat_Luci_Tulane/Pseudocolored/12.12 Beef Shoulder 3_grid_5x5_r7_c0.jpg",
+    "path": "/home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane/Pseudocolored/12.12 Beef Shoulder 3_grid_5x5_r7_c0.jpg",
     "composite_score": 0.681,
     "rank": 3,
     "technical_quality": 0.899,

@@ -80,7 +80,7 @@ except ImportError:
 # ------------------------------
 # User-configurable defaults
 # ------------------------------
-DATA_ROOT = Path(os.path.expanduser("~/Data_for_ML/Meat_Luci_Tulane"))
+DATA_ROOT = Path(os.path.expanduser("t"))
 PSEUDO_DIR = DATA_ROOT / "Pseudocolored"
 JSON_MASKS_DIR = DATA_ROOT / "Masks"
 BUILD_ROOT = DATA_ROOT / "_build"
@@ -102,7 +102,7 @@ OVERLAY_COLORS = {
 
 DEFAULTS = {
     "make_masks": True,
-    "make_overlays": True,
+    "make_overlays": False,
     "target_mask": "fat",
     "subtract": True,
     "subtract_class": "bubbles",

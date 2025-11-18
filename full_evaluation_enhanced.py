@@ -1,30 +1,23 @@
 #!/usr/bin/env python3
 """
-Enhanced Publication-Quality Full Evaluation Script for Adipose U-Net
+Full Evaluation Script for Adipose U-Net
 Extends full_evaluation.py with advanced post-processing for improved performance
 
-NEW ENHANCEMENTS:
-1. Adaptive threshold optimization (0.1-0.9 two-stage grid search)
-2. Sliding window inference with Gaussian blending (configurable overlap)
-3. Morphological boundary refinement (bilateral filtering + morphology)
-
-Expected improvements: +2-7% Dice score
-- Threshold optimization: +2-3%
-- Sliding window + blending: +2-5%  
-- Boundary refinement: +1-2%
-
-ORIGINAL FEATURES:
+FEATURES:
 - Training statistics isolation (no data leakage)
 - Slide-level metrics aggregation 
 - Comprehensive segmentation metrics with confidence intervals
 - TP/FP/FN categorical error analysis
 - F1-optimized threshold selection
-- Publication-ready statistical reporting
+- Statistical reporting
+- Adaptive threshold optimization (0.1-0.9 two-stage grid search)
+- Sliding window inference with Gaussian blending (configurable overlap)
+- Morphological boundary refinement (bilateral filtering + morphology)
 
 Usage:
     # All enhancements enabled
     python full_evaluation_enhanced.py \
-        --weights checkpoints/best/phase1_best.weights.h5 \
+        --weights checkpoints/best/phase_best.weights.h5 \
         --clean-test --stain \
         --use-tta --tta-mode full \
         --sliding-window --overlap 0.5 \
@@ -338,10 +331,10 @@ class BoundaryRefiner:
         # Convert to uint8 for OpenCV
         mask_u8 = (mask * 255).astype(np.uint8)
         
-        # 1. Identify boundary region
+        # 1. Identify boundary region using XOR to avoid uint8 wraparound
         eroded = cv2.erode(mask_u8, self.kernel, iterations=1)
         dilated = cv2.dilate(mask_u8, self.kernel, iterations=1)
-        boundary = (dilated > 0).astype(np.uint8) - (eroded > 0).astype(np.uint8)
+        boundary = np.logical_xor(dilated > 0, eroded > 0).astype(np.uint8)
         
         # 2. Apply bilateral filtering to smooth boundaries
         # This preserves edges while smoothing noise
@@ -378,7 +371,7 @@ def resolve_checkpoint_paths(
     Simplified path resolution with new logic:
     - weights_path: absolute/relative path to a .h5 (required)
     - output_path: base folder for publication_evaluation_{dataset} directories
-    - data_root_path: dataset root (default: /home/luci/Data_for_ML/Meat_Luci_Tulane/_test/stain_normalized)
+    - data_root_path: dataset root (default: /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane/_test/stain_normalized)
     """
     # 1) Weights (required)
     if not weights_arg:
@@ -412,16 +405,16 @@ def resolve_checkpoint_paths(
         print(f"📂 Using provided data root: {data_root_path}")
     elif use_test_timestamp:
         # Special case for --test flag: extract timestamp and find matching build
-        home = Path.home()
-        data_root_base = home / "Data_for_ML" / "Meat_Luci_Tulane"
+        data_root_base = Path("/home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane")
         
         # Extract timestamp from checkpoint directory name
         checkpoint_dir_name = Path(ckpt_dir).name
         checkpoint_timestamp = _extract_ts_from_name(checkpoint_dir_name)
         
         if checkpoint_timestamp is not None:
-            # Convert back to string format for matching
-            ts_str = str(int(checkpoint_timestamp)).replace('.0', '').ljust(15, '0')[:15]
+            # Convert to exactly 14 digits: YYYYMMDDHHMMSS
+            ts_num = int(checkpoint_timestamp)
+            ts_str = f"{ts_num:014d}"
             # Format as YYYYMMDD_HHMMSS
             if len(ts_str) >= 14:
                 formatted_ts = f"{ts_str[:8]}_{ts_str[8:14]}"
@@ -457,7 +450,7 @@ def resolve_checkpoint_paths(
             )
     else:
         # Default data root for human-test and clean-test
-        data_root_path = "/home/luci/Data_for_ML/Meat_Luci_Tulane/_test/stain_normalized"
+        data_root_path = "/home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane/_test/stain_normalized"
         print(f"📂 Using default data root: {data_root_path}")
 
     return weights_path, output_path, data_root_path
@@ -1024,92 +1017,139 @@ def safe_bootstrap_ci(data, func=np.mean):
     return point, (lo, hi)
 
 
-def create_tp_fp_fn_visualization(image: np.ndarray, pred: np.ndarray, true: np.ndarray,
-                                  threshold: float, output_path: str, image_name: str) -> None:
+def create_4panel_visualization(original: np.ndarray, gt_mask: np.ndarray, pred_mask: np.ndarray, 
+                                dice_score: float, output_path: str) -> None:
     """
-    Create TP/FP/FN categorical error visualization
+    Create 4-panel visualization with unique colors (matches visualize_test_predictions.py)
     
-    Args:
-        image: Original grayscale image
-        pred: Prediction probability map
-        true: Ground truth binary mask
-        threshold: Threshold for binarizing prediction
-        output_path: Path to save visualization
-        image_name: Name for image title
+    Panel 1: Original RGB image
+    Panel 2: Ground truth overlay (yellow on grayscale)
+    Panel 3: Prediction overlay (magenta on grayscale)
+    Panel 4: Discrepancy map (green=TP, red=FP, blue=FN, black=TN)
     """
-    # Binarize predictions
-    pred_bin = binarize_prediction(pred, threshold)
-    true_bin = (true > 0.5).astype(np.uint8)
+    # Handle grayscale images - convert to RGB for visualization
+    if original.ndim == 2:
+        grayscale = original.astype(np.uint8)
+        original_rgb = np.stack([grayscale]*3, axis=-1)
+    else:
+        original_rgb = original
+        grayscale = cv2.cvtColor(original_rgb, cv2.COLOR_RGB2GRAY)
     
-    # Calculate error categories
-    tp = pred_bin & true_bin       # True Positive: Green
-    fp = pred_bin & (~true_bin)    # False Positive: Red  
-    fn = (~pred_bin) & true_bin    # False Negative: Blue
-    
-    # Normalize image for display
-    img_norm = np.clip((image - image.min()) / (image.max() - image.min() + 1e-10) * 255, 0, 255).astype(np.uint8)
-    img_rgb = cv2.cvtColor(img_norm, cv2.COLOR_GRAY2RGB)
-    
-    # Create error overlay
-    error_overlay = img_rgb.copy()
-    alpha = 0.6  # Blend factor
-    
-    # Apply color coding with blending
-    error_overlay[tp == 1] = (alpha * error_overlay[tp == 1] + (1-alpha) * np.array([0, 255, 0])).astype(np.uint8)
-    error_overlay[fp == 1] = (alpha * error_overlay[fp == 1] + (1-alpha) * np.array([255, 0, 0])).astype(np.uint8)
-    error_overlay[fn == 1] = (alpha * error_overlay[fn == 1] + (1-alpha) * np.array([0, 0, 255])).astype(np.uint8)
-    
-    # Calculate metrics for display
-    metrics = calculate_pixel_metrics(pred, true, threshold)
-    
-    # Create visualization
+    # Create figure with 2x2 grid
     fig, axes = plt.subplots(2, 2, figsize=(16, 16))
     
-    # Original image
-    axes[0, 0].imshow(img_norm, cmap='gray', vmin=0, vmax=255)
-    axes[0, 0].set_title(f'Original Image\n{image_name}', fontsize=14, fontweight='bold')
+    # Panel 1: Original Image (RGB)
+    axes[0, 0].imshow(original_rgb)
+    axes[0, 0].set_title('Original Image', fontsize=14, fontweight='bold')
     axes[0, 0].axis('off')
     
-    # Ground truth overlay
-    true_overlay = img_rgb.copy()
-    true_overlay[true_bin == 1] = (alpha * true_overlay[true_bin == 1] + (1-alpha) * np.array([0, 255, 0])).astype(np.uint8)
-    axes[0, 1].imshow(true_overlay)
-    axes[0, 1].set_title('Ground Truth\n(Green)', fontsize=14, fontweight='bold')
+    # Panel 2: Ground Truth Overlay (Yellow on grayscale)
+    gt_overlay = np.stack([grayscale, grayscale, grayscale], axis=-1).astype(np.float32)
+    
+    # Create yellow overlay for ground truth
+    yellow_mask = np.zeros_like(gt_overlay)
+    yellow_mask[gt_mask > 0] = [255, 255, 0]  # Yellow
+    
+    # Blend with alpha
+    gt_blend = cv2.addWeighted(gt_overlay.astype(np.uint8), 0.6, 
+                                yellow_mask.astype(np.uint8), 0.4, 0)
+    
+    axes[0, 1].imshow(gt_blend)
+    axes[0, 1].set_title('Ground Truth (Yellow)', fontsize=14, fontweight='bold')
     axes[0, 1].axis('off')
     
-    # Prediction overlay
-    pred_overlay = img_rgb.copy()
-    pred_overlay[pred_bin == 1] = (alpha * pred_overlay[pred_bin == 1] + (1-alpha) * np.array([255, 255, 0])).astype(np.uint8)
-    axes[1, 0].imshow(pred_overlay)
-    axes[1, 0].set_title(f'Prediction (t={threshold:.2f})\n(Yellow)', fontsize=14, fontweight='bold')
+    # Panel 3: Prediction Overlay (Magenta on grayscale)
+    pred_overlay = np.stack([grayscale, grayscale, grayscale], axis=-1).astype(np.float32)
+    
+    # Create magenta overlay for prediction
+    magenta_mask = np.zeros_like(pred_overlay)
+    pred_binary = (pred_mask > 0.5).astype(np.uint8)
+    magenta_mask[pred_binary > 0] = [255, 0, 255]  # Magenta
+    
+    # Blend with alpha
+    pred_blend = cv2.addWeighted(pred_overlay.astype(np.uint8), 0.6,
+                                  magenta_mask.astype(np.uint8), 0.4, 0)
+    
+    axes[1, 0].imshow(pred_blend)
+    axes[1, 0].set_title(f'Prediction (Magenta) - Dice: {dice_score:.3f}', 
+                         fontsize=14, fontweight='bold')
     axes[1, 0].axis('off')
     
-    # Error analysis
-    axes[1, 1].imshow(error_overlay)
-    axes[1, 1].set_title('Error Analysis\nTP(Green) FP(Red) FN(Blue)', fontsize=14, fontweight='bold')
+    # Panel 4: Discrepancy Map
+    # Green=TP, Red=FP, Blue=FN, Black=TN
+    discrepancy = np.zeros((original.shape[0], original.shape[1], 3), dtype=np.uint8)
+    
+    gt_binary = (gt_mask > 0).astype(bool)
+    pred_binary_bool = (pred_mask > 0.5).astype(bool)
+    
+    # True Positive (Green)
+    tp_mask = gt_binary & pred_binary_bool
+    discrepancy[tp_mask] = [0, 255, 0]
+    
+    # False Positive (Red)
+    fp_mask = (~gt_binary) & pred_binary_bool
+    discrepancy[fp_mask] = [255, 0, 0]
+    
+    # False Negative (Blue)
+    fn_mask = gt_binary & (~pred_binary_bool)
+    discrepancy[fn_mask] = [0, 0, 255]
+    
+    # True Negative (Black) - already zero
+    
+    axes[1, 1].imshow(discrepancy)
+    axes[1, 1].set_title('Discrepancy (Green=TP, Red=FP, Blue=FN, Black=TN)', 
+                         fontsize=14, fontweight='bold')
     axes[1, 1].axis('off')
     
-    # Add comprehensive metrics text
-    metrics_text = f"""
-    Dice Score: {metrics['dice_score']:.4f}
-    Jaccard (IoU): {metrics['jaccard_index']:.4f}
-    Precision: {metrics['precision']:.4f}
-    Sensitivity: {metrics['sensitivity']:.4f}
-    Specificity: {metrics['specificity']:.4f}
-    
-    TP: {metrics['tp']:,}  FP: {metrics['fp']:,}
-    FN: {metrics['fn']:,}  TN: {metrics['tn']:,}
-    """
-    
-    fig.text(0.02, 0.02, metrics_text, fontsize=11, 
-             bbox=dict(boxstyle='round,pad=0.5', facecolor='lightyellow', alpha=0.9))
-    
-    # Add overall title
-    fig.suptitle(f'Publication-Quality Evaluation: {image_name}', fontsize=16, fontweight='bold', y=0.95)
-    
     plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close()
+
+
+def sample_tiles(predictions: List[np.ndarray], ground_truths: List[np.ndarray], 
+                tile_paths: List[str], n_positive: int = 120, n_negative: int = 30) -> List[int]:
+    """Sample tiles stratified by positive/negative status"""
+    positive_indices = []
+    negative_indices = []
+    
+    print("[Sampling] Categorizing tiles as positive/negative...")
+    for idx, gt in enumerate(ground_truths):
+        if gt.sum() > 0:
+            positive_indices.append(idx)
+        else:
+            negative_indices.append(idx)
+    
+    print(f"[Sampling] Found {len(positive_indices)} positive and {len(negative_indices)} negative tiles")
+    
+    # Sample
+    if len(positive_indices) < n_positive:
+        print(f"[WARN] Only {len(positive_indices)} positive tiles available, sampling all")
+        sampled_pos = positive_indices
+    else:
+        sampled_pos = np.random.choice(positive_indices, n_positive, replace=False).tolist()
+    
+    if len(negative_indices) < n_negative:
+        print(f"[WARN] Only {len(negative_indices)} negative tiles available, sampling all")
+        sampled_neg = negative_indices
+    else:
+        sampled_neg = np.random.choice(negative_indices, n_negative, replace=False).tolist()
+    
+    sampled_indices = sampled_pos + sampled_neg
+    np.random.shuffle(sampled_indices)
+    
+    return sampled_indices
+
+
+def categorize_by_dice(dice_score: float) -> str:
+    """Categorize into performance buckets"""
+    if dice_score < 0.25:
+        return 'poor'
+    elif dice_score < 0.50:
+        return 'medium'
+    elif dice_score < 0.75:
+        return 'good'
+    else:
+        return 'excellent'
 
 
 class AdiposeUNet:
@@ -1259,6 +1299,36 @@ class AdiposeUNet:
             return pred, timing_info
 
 
+def read_image_gray(path: str) -> np.ndarray:
+    """
+    Load image in grayscale with proper bit-depth handling for TIFFs
+    
+    Args:
+        path: Path to image file
+        
+    Returns:
+        Grayscale image as float32 array
+        
+    Note:
+        Uses tifffile for .tif/.tiff to preserve 12/16-bit depth.
+        Uses cv2 for other formats (.jpg, .png, etc.)
+    """
+    p = Path(path)
+    
+    if p.suffix.lower() in {'.tif', '.tiff'}:
+        # Use tifffile to preserve bit depth
+        arr = tiff.imread(str(p))
+        
+        # Handle RGB TIFFs - convert to grayscale
+        if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+            arr = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+        
+        return arr.astype(np.float32)
+    else:
+        # Use OpenCV for standard formats
+        return cv2.imread(str(p), cv2.IMREAD_GRAYSCALE).astype(np.float32)
+
+
 def load_validation_data(val_root: str) -> List[Tuple[str, str]]:
     """
     Flexible loader:
@@ -1325,7 +1395,9 @@ def run_publication_evaluation(val_data_root: str, weights_path: str, output_dir
                              use_tta: bool = False, tta_mode: str = 'basic',
                              use_sliding_window: bool = False, overlap: float = 0.5,
                              blend_mode: str = 'gaussian', use_boundary_refine: bool = False,
-                             refine_kernel: int = 5, adaptive_threshold: bool = False) -> ComprehensiveMetrics:
+                             refine_kernel: int = 5, adaptive_threshold: bool = False,
+                             save_overlays: bool = False, n_positive: int = 120, 
+                             n_negative: int = 30) -> ComprehensiveMetrics:
     """
     Run publication-quality evaluation with all methodological improvements
     
@@ -1410,8 +1482,8 @@ def run_publication_evaluation(val_data_root: str, weights_path: str, output_dir
     start_time = time.time()
     
     for i, (img_path, mask_path) in enumerate(paired_files):
-        # Load image and mask
-        image = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE).astype(np.float32)
+        # Load image and mask with proper bit-depth handling
+        image = read_image_gray(img_path)
         true_mask = tiff.imread(mask_path)
         
         if true_mask.ndim == 3:
@@ -1662,8 +1734,86 @@ def run_publication_evaluation(val_data_root: str, weights_path: str, output_dir
     results_df.to_csv(results_table_path, index=False)
     print(f"✓ Saved results table: {results_table_path}")
     
+    # Create 4-panel overlays organized by Dice buckets if requested
+    if save_overlays:
+        print(f"\nGenerating 4-panel overlay visualizations...")
+        
+        # Sample tiles (80/20 positive/negative split)
+        sampled_indices = sample_tiles(tile_predictions, tile_ground_truths, tile_paths, 
+                                       n_positive=n_positive, n_negative=n_negative)
+        
+        print(f"\n[Overlays] Processing {len(sampled_indices)} sampled tiles...")
+        
+        # Create overlay directories
+        overlays_dir = output_dir / "overlays"
+        for bucket in ['poor', 'medium', 'good', 'excellent']:
+            (overlays_dir / bucket).mkdir(parents=True, exist_ok=True)
+        
+        # Track statistics
+        bucket_counts = {'poor': 0, 'medium': 0, 'good': 0, 'excellent': 0}
+        overlay_dice_scores = []
+        
+        # Generate overlays for sampled tiles
+        from tqdm import tqdm
+        for i, idx in enumerate(tqdm(sampled_indices, desc="Creating overlays")):
+            # Get data for this tile
+            pred = tile_predictions[idx]
+            true = tile_ground_truths[idx]
+            img_gray = tile_images[idx]
+            img_path = tile_paths[idx]
+            
+            # Load RGB version of image for visualization
+            img_rgb = cv2.imread(img_path)
+            img_rgb = cv2.cvtColor(img_rgb, cv2.COLOR_BGR2RGB)
+            
+            # Calculate Dice score
+            dice = calculate_pixel_metrics(pred, true, optimal_threshold)['dice_score']
+            overlay_dice_scores.append(dice)
+            
+            # Categorize by Dice score
+            bucket = categorize_by_dice(dice)
+            bucket_counts[bucket] += 1
+            
+            # Create output filename
+            image_name = Path(img_path).stem
+            output_filename = f"{bucket}_{i+1:03d}_{image_name}_dice_{dice:.3f}.png"
+            output_path = overlays_dir / bucket / output_filename
+            
+            # Generate 4-panel visualization
+            create_4panel_visualization(img_rgb, true, pred, dice, str(output_path))
+        
+        # Generate summary
+        summary_path = overlays_dir / "summary.txt"
+        with open(summary_path, 'w') as f:
+            f.write(f"OVERLAY VISUALIZATION SUMMARY: {dataset_name.upper()}\n")
+            f.write("="*80 + "\n\n")
+            f.write(f"Total samples: {len(sampled_indices)}\n")
+            f.write(f"Positive tiles: {n_positive}\n")
+            f.write(f"Negative tiles: {n_negative}\n")
+            f.write(f"Threshold: {optimal_threshold:.3f}\n\n")
+            
+            f.write("DICE SCORE STATISTICS:\n")
+            f.write("-"*40 + "\n")
+            f.write(f"Mean Dice: {np.mean(overlay_dice_scores):.4f}\n")
+            f.write(f"Median Dice: {np.median(overlay_dice_scores):.4f}\n")
+            f.write(f"Std Dice: {np.std(overlay_dice_scores):.4f}\n")
+            f.write(f"Min Dice: {np.min(overlay_dice_scores):.4f}\n")
+            f.write(f"Max Dice: {np.max(overlay_dice_scores):.4f}\n\n")
+            
+            f.write("BUCKET DISTRIBUTION:\n")
+            f.write("-"*40 + "\n")
+            f.write(f"Poor (< 25%):       {bucket_counts['poor']:3d} images\n")
+            f.write(f"Medium (25-50%):    {bucket_counts['medium']:3d} images\n")
+            f.write(f"Good (50-75%):      {bucket_counts['good']:3d} images\n")
+            f.write(f"Excellent (75-100%): {bucket_counts['excellent']:3d} images\n")
+        
+        print(f"✓ Saved {len(sampled_indices)} overlay visualizations to: {overlays_dir}")
+        print(f"  Bucket distribution: Poor={bucket_counts['poor']}, Medium={bucket_counts['medium']}, " 
+              f"Good={bucket_counts['good']}, Excellent={bucket_counts['excellent']}")
+        print(f"✓ Summary saved to: {summary_path}")
+    
     # Create sample visualizations if requested
-    if save_visualizations:
+    elif save_visualizations:
         print(f"\nCreating sample visualizations (n={min(n_vis_samples, n_files)})...")
         
         viz_dir = output_dir / "visualizations"
@@ -1678,14 +1828,18 @@ def run_publication_evaluation(val_data_root: str, weights_path: str, output_dir
             image_name = Path(img_path).stem
             
             output_path = viz_dir / f"{dataset_name}_sample_{i+1:02d}_{image_name}.png"
+
+            # Calculate dice score for this tile
+            dice = calculate_pixel_metrics(tile_predictions[idx],
+                                          tile_ground_truths[idx],
+                                          optimal_threshold)['dice_score']
             
-            create_tp_fp_fn_visualization(
-                tile_images[idx], 
-                tile_predictions[idx], 
-                tile_ground_truths[idx],
-                optimal_threshold,
-                str(output_path),
-                image_name
+            create_4panel_visualization(
+                tile_images[idx],
+                tile_ground_truths[idx],    # GT in correct position
+                tile_predictions[idx],      # PRED in correct position
+                dice,                       # dice_score, not threshold
+                str(output_path)            # removed extra image_name
             )
             
             if (i + 1) % 5 == 0:
@@ -1735,8 +1889,6 @@ def run_publication_evaluation(val_data_root: str, weights_path: str, output_dir
     
     print(f"\n✓ All results saved to: {output_dir}")
     print(f"✓ Results table: {results_table_path}")
-    if save_visualizations:
-        print(f"✓ Visualizations: {viz_dir}")
     
     print(f"{'='*80}\n")
     
@@ -1747,7 +1899,7 @@ def main():
     """Main execution function with redesigned flag-based evaluation"""
     parser = argparse.ArgumentParser(
         description="Publication-Quality Full Evaluation for Adipose U-Net",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        formatter_class=esRawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Evaluate human-test with checkpoint
@@ -1770,7 +1922,7 @@ Examples:
     
     # Optional paths
     parser.add_argument('--data-root', type=str, default='',
-                       help='Path to dataset root directory (default: /home/luci/Data_for_ML/Meat_Luci_Tulane/_test/stain_normalized)')
+                       help='Path to dataset root directory (default: /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane/_test/stain_normalized)')
     parser.add_argument('--output', type=str, default='',
                        help='Output directory for results (auto-places in checkpoint folder if not specified)')
     
@@ -1783,6 +1935,8 @@ Examples:
                        help='Evaluate human_test dataset')
     parser.add_argument('--clean-test', action='store_true',
                        help='Evaluate clean_test dataset')
+    parser.add_argument('--clean-test-50-overlap', action='store_true',
+                       help='Evaluate clean_test_50_overlap dataset')
     
     # Data source selection (mutually exclusive)
     data_group = parser.add_mutually_exclusive_group()
@@ -1819,6 +1973,14 @@ Examples:
     parser.add_argument('--adaptive-threshold', action='store_true', default=False,
                        help='Use adaptive two-stage threshold optimization (0.1-0.9)')
     
+    # Overlay visualization options
+    parser.add_argument('--save-overlays', action='store_true', default=False,
+                       help='Save 4-panel overlay visualizations organized by Dice score buckets')
+    parser.add_argument('--n-positive', type=int, default=120,
+                       help='Number of positive tiles to sample for overlays (default: 120)')
+    parser.add_argument('--n-negative', type=int, default=30,
+                       help='Number of negative tiles to sample for overlays (default: 30)')
+    
     args = parser.parse_args()
     
     # Determine which datasets to evaluate
@@ -1842,17 +2004,26 @@ Examples:
             datasets_to_evaluate.append('clean_test')
             print("🔗 --clean-test flag: Adding clean_test dataset")
     
+    if args.clean_test_50_overlap:
+        if 'clean_test_50_overlap' not in datasets_to_evaluate:
+            datasets_to_evaluate.append('clean_test_50_overlap')
+            print("🔗 --clean-test-50-overlap flag: Adding clean_test_50_overlap dataset")
+    
     # Validate at least one dataset is selected
     if not datasets_to_evaluate:
         print("❌ No datasets specified. Please use one or more of: --val, --test, --human-test, --clean-test")
         return 1
     
     # Validate data source selection for human-test/clean-test datasets
-    requires_data_source = [d for d in datasets_to_evaluate if d in ['human_test', 'clean_test']]
+    requires_data_source = [d for d in datasets_to_evaluate if d in ['human_test', 'clean_test', 'clean_test_50_overlap']]
     if requires_data_source and not args.stain and not args.original:
         print(f"❌ Data source must be specified for {requires_data_source}.")
         print("Please use either --stain or --original flag.")
         return 1
+    
+    # Fix: Make adaptive-threshold imply optimize-threshold
+    # If user passes --adaptive-threshold, enable optimization automatically
+    opt_thresh = args.optimize_threshold or args.adaptive_threshold
     
     # Setup pipeline
     print(f"\n{'='*80}")
@@ -1860,8 +2031,9 @@ Examples:
     print(f"{'='*80}")
     print(f"🎯 Datasets to evaluate: {datasets_to_evaluate}")
     
-    # Track results from all datasets
+    # Track results from all datasets and their actual output directories
     all_results = {}
+    all_output_dirs = {}
     
     for i, dataset_name in enumerate(datasets_to_evaluate):
         print(f"\n{'='*80}")
@@ -1882,12 +2054,17 @@ Examples:
                 # Apply stain flag logic only for --human-test and --clean-test datasets
                 if not args.data_root:
                     if args.stain:
-                        default_dataroot = "/home/luci/Data_for_ML/Meat_Luci_Tulane/_test/stain_normalized"
+                        default_dataroot = "/home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane/_test/stain_normalized"
                     else:
-                        default_dataroot = "/home/luci/Data_for_ML/Meat_Luci_Tulane/_test/original"
+                        default_dataroot = "/home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane/_test/original"
                     print(f"🧪 Stain flag: {'enabled' if args.stain else 'disabled'} → Using {default_dataroot}")
                 else:
                     default_dataroot = args.data_root
+            
+            # Debug: Print what we're about to pass
+            print(f"[DEBUG] Calling resolve_checkpoint_paths with:")
+            print(f"  data_root_arg={repr(default_dataroot)}")
+            print(f"  use_test_timestamp={use_timestamp_matching}")
             
             weights_path, output_path, data_root_path = resolve_checkpoint_paths(
                 weights_arg=args.weights,
@@ -1920,8 +2097,36 @@ Examples:
                 # For human-test/clean-test, use explicit flags
                 data_source_suffix = 'stain' if args.stain else 'original'
             
-            tta_suffix = f"_tta_{args.tta_mode}" if args.use_tta else ""
-            output_folder_name = f"{dataset_name}_{data_source_suffix}{tta_suffix}"
+            # Build comprehensive output folder name with all enhancement flags
+            enhancement_suffixes = []
+            
+            # TTA
+            if args.use_tta:
+                enhancement_suffixes.append(f"tta_{args.tta_mode}")
+            
+            # Sliding window
+            if args.sliding_window:
+                sw_suffix = f"sw_{args.blend_mode}"
+                if args.overlap != 0.5:
+                    sw_suffix += f"_o{int(args.overlap*100)}"
+                enhancement_suffixes.append(sw_suffix)
+            
+            # Boundary refinement
+            if args.boundary_refine:
+                refine_suffix = "refine"
+                if args.refine_kernel != 5:
+                    refine_suffix += f"{args.refine_kernel}"
+                enhancement_suffixes.append(refine_suffix)
+            
+            # Adaptive threshold
+            if args.adaptive_threshold:
+                enhancement_suffixes.append("adaptive")
+            
+            # Build final folder name
+            if enhancement_suffixes:
+                output_folder_name = f"{dataset_name}_{data_source_suffix}_{'_'.join(enhancement_suffixes)}"
+            else:
+                output_folder_name = f"{dataset_name}_{data_source_suffix}"
             
             # Setup output directory
             output_dir = Path(output_path) / output_folder_name
@@ -1953,10 +2158,14 @@ Examples:
                 blend_mode=args.blend_mode,
                 use_boundary_refine=args.boundary_refine,
                 refine_kernel=args.refine_kernel,
-                adaptive_threshold=args.adaptive_threshold
+                adaptive_threshold=args.adaptive_threshold,
+                save_overlays=args.save_overlays,
+                n_positive=args.n_positive,
+                n_negative=args.n_negative
             )
             
             all_results[dataset_name] = results
+            all_output_dirs[dataset_name] = str(output_dir)
             
             print(f"✅ {dataset_name.upper()} evaluation completed!")
             print(f"   Dice = {results.dice_score:.4f} [{results.dice_ci[0]:.4f}, {results.dice_ci[1]:.4f}]")
@@ -1983,14 +2192,8 @@ Examples:
         
         print(f"\n📂 Results saved in evaluation directories:")
         for dataset_name in all_results.keys():
-            # Re-resolve output path to show user where results are
-            _, output_path, _ = resolve_checkpoint_paths(
-                weights_arg=args.weights,
-                output_arg=args.output,
-                data_root_arg=args.data_root,
-                use_test_timestamp=(dataset_name in ['val', 'test'])
-            )
-            result_dir = Path(output_path) / f"publication_evaluation_{dataset_name}"
+            # Use the actual tracked output directory
+            result_dir = all_output_dirs[dataset_name]
             print(f"   {dataset_name}: {result_dir}")
         
         # Check if some datasets failed

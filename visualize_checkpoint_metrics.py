@@ -12,15 +12,30 @@ Metadata sources:
 - Build: build_summary.txt (if available)
 - Metrics: comprehensive_results.csv
 
+IMPORTANT: Flags MUST match the exact configuration used during evaluation with full_evaluation_enhanced.py
+The script will throw an error if the expected directory doesn't exist and show available options.
+
 Usage:
-    # All checkpoints with clean-test + stain + tta-full
-    python visualize_checkpoint_metrics.py --clean-test --stain --tta-full
+    # Basic evaluation (no enhancements)
+    python visualize_checkpoint_metrics.py --clean-test --stain
     
-    # Specific checkpoints
-    python visualize_checkpoint_metrics.py --checkpoints 20251024_150723 20251101_023332 --clean-test --stain
+    # With TTA
+    python visualize_checkpoint_metrics.py --clean-test --stain --tta-mode full
     
-    # Multiple configurations
-    python visualize_checkpoint_metrics.py --clean-test --stain --tta-full --tta-basic
+    # With all enhancements (must match evaluation flags exactly)
+    python visualize_checkpoint_metrics.py --clean-test --stain \
+        --tta-mode full --sliding-window --boundary-refine --adaptive-threshold
+    
+    # Specific checkpoints with named subfolder
+    python visualize_checkpoint_metrics.py --checkpoints 20251024_150723 20251101_023332 \
+        --clean-test --stain --name best_models
+    
+    # Non-standard sliding window config
+    python visualize_checkpoint_metrics.py --clean-test --original \
+        --sliding-window --overlap 0.25 --blend-mode linear
+
+NOTE: If you get a directory not found error, the script will show you which evaluation 
+      directories actually exist and suggest the correct flags to use.
 """
 
 import os
@@ -106,7 +121,7 @@ class CheckpointMetricsExtractor:
     """Extracts metrics and metadata from checkpoints"""
     
     def __init__(self, checkpoints_dir: str = "checkpoints",
-                 data_root: str = "/home/luci/Data_for_ML/Meat_Luci_Tulane"):
+                 data_root: str = "data/Meat_Luci_Tulane"):
         self.checkpoints_dir = Path(checkpoints_dir)
         self.data_root = Path(data_root)
         
@@ -260,7 +275,7 @@ class CheckpointMetricsExtractor:
     def extract_evaluation_metrics(self, checkpoint_dir: Path, 
                                    eval_config: str) -> Optional[EvaluationMetrics]:
         """
-        Extract metrics from evaluation CSV file
+        Extract metrics from evaluation CSV file with strict directory validation
         
         Args:
             checkpoint_dir: Path to checkpoint directory
@@ -268,16 +283,83 @@ class CheckpointMetricsExtractor:
             
         Returns:
             EvaluationMetrics object or None if not found
+            
+        Raises:
+            FileNotFoundError: If expected evaluation directory doesn't exist with helpful suggestions
         """
         # Build evaluation path
         eval_dir = checkpoint_dir / "evaluation" / eval_config
+        
+        # STRICT VALIDATION: Check if directory exists
+        if not eval_dir.exists():
+            # List available evaluation directories for this checkpoint
+            eval_base = checkpoint_dir / "evaluation"
+            
+            if not eval_base.exists():
+                raise FileNotFoundError(
+                    f"❌ No evaluation directory found for checkpoint: {checkpoint_dir.name}\n"
+                    f"   Expected base: {eval_base}\n"
+                    f"   This checkpoint has not been evaluated yet."
+                )
+            
+            # Find what evaluation directories actually exist
+            available_dirs = [d.name for d in eval_base.iterdir() if d.is_dir()]
+            
+            if not available_dirs:
+                raise FileNotFoundError(
+                    f"❌ Evaluation directory exists but is empty: {eval_base}\n"
+                    f"   No evaluation configurations found."
+                )
+            
+            # Build helpful error message
+            error_msg = (
+                f"❌ Evaluation directory not found for checkpoint: {checkpoint_dir.name}\n\n"
+                f"   Expected: {eval_config}\n"
+                f"   Location: {eval_dir}\n\n"
+                f"   Available evaluation configurations ({len(available_dirs)}):\n"
+            )
+            
+            for available_dir in sorted(available_dirs):
+                error_msg += f"     - {available_dir}\n"
+            
+            # Parse expected config to suggest corrections
+            error_msg += f"\n   Suggestion:\n"
+            
+            # Check if a similar config exists (without some flags)
+            base_config_parts = eval_config.split('_')
+            if len(base_config_parts) >= 2:
+                base_config = '_'.join(base_config_parts[:2])  # e.g., "clean_test_stain"
+                
+                # Check if base config exists
+                if base_config in available_dirs:
+                    error_msg += f"     ✓ Found base config: {base_config}\n"
+                    error_msg += f"     → Remove enhancement flags (--tta-mode, --sliding-window, etc.)\n"
+                else:
+                    # Check if any config matches the dataset but different data source
+                    dataset_part = base_config_parts[0]  # e.g., "clean_test"
+                    matching = [d for d in available_dirs if d.startswith(dataset_part)]
+                    
+                    if matching:
+                        error_msg += f"     ✓ Found {len(matching)} config(s) for dataset '{dataset_part}':\n"
+                        for m in matching[:3]:  # Show up to 3 examples
+                            error_msg += f"       → {m}\n"
+                        error_msg += f"     → Check your --stain/--original flag and enhancement flags\n"
+                    else:
+                        error_msg += f"     → No configurations found for dataset '{dataset_part}'\n"
+                        error_msg += f"     → Check your dataset flag (--clean-test, --human-test, etc.)\n"
+            
+            raise FileNotFoundError(error_msg)
         
         # Look for comprehensive results CSV
         csv_files = list(eval_dir.glob("*comprehensive_results.csv"))
         
         if not csv_files:
-            print(f"  ⚠️  Metrics CSV not found: {eval_dir}")
-            return None
+            raise FileNotFoundError(
+                f"❌ Evaluation directory exists but no results CSV found\n"
+                f"   Directory: {eval_dir}\n"
+                f"   Expected file pattern: *comprehensive_results.csv\n"
+                f"   The evaluation may have failed or not completed."
+            )
         
         csv_file = csv_files[0]
         
@@ -341,13 +423,14 @@ class MetricsVisualizer:
         plt.rcParams['figure.titlesize'] = 14
     
     def plot_dice_comparison(self, data: List[Tuple[CheckpointMetadata, EvaluationMetrics]],
-                            config_name: str) -> Path:
+                            config_name: str, collection_name: str = "") -> Path:
         """
         Create Dice score comparison plot with confidence intervals
         
         Args:
             data: List of (metadata, metrics) tuples
             config_name: Evaluation configuration name
+            collection_name: Name of the checkpoint collection (e.g., "all" or custom name)
             
         Returns:
             Path to saved plot
@@ -383,7 +466,12 @@ class MetricsVisualizer:
         ax.set_yticks(y_pos)
         ax.set_yticklabels(labels)
         ax.set_xlabel('Dice Score', fontweight='bold')
-        ax.set_title(f'Dice Score Comparison\n{config_name}', fontweight='bold', pad=20)
+        
+        # Build title with collection name
+        title = f'Dice Score Comparison\n{config_name}'
+        if collection_name:
+            title = f'Dice Score Comparison\n{config_name} - {collection_name}'
+        ax.set_title(title, fontweight='bold', pad=20)
         ax.set_xlim(0, 1.0)
         ax.grid(True, axis='x', alpha=0.3, linestyle='--')
         
@@ -402,13 +490,14 @@ class MetricsVisualizer:
         return output_path
     
     def plot_performance_metrics(self, data: List[Tuple[CheckpointMetadata, EvaluationMetrics]],
-                                config_name: str) -> Path:
+                                config_name: str, collection_name: str = "") -> Path:
         """
         Create grouped performance metrics comparison
         
         Args:
             data: List of (metadata, metrics) tuples
             config_name: Evaluation configuration name
+            collection_name: Name of the checkpoint collection (e.g., "all" or custom name)
             
         Returns:
             Path to saved plot
@@ -444,7 +533,12 @@ class MetricsVisualizer:
         ax.set_yticks(y_pos)
         ax.set_yticklabels(labels)
         ax.set_xlabel('Score', fontweight='bold')
-        ax.set_title(f'Performance Metrics Comparison\n{config_name}', fontweight='bold', pad=20)
+        
+        # Build title with collection name
+        title = f'Performance Metrics Comparison\n{config_name}'
+        if collection_name:
+            title = f'Performance Metrics Comparison\n{config_name} - {collection_name}'
+        ax.set_title(title, fontweight='bold', pad=20)
         ax.set_xlim(0, 1.05)
         ax.legend(loc='lower right', framealpha=0.9)
         ax.grid(True, axis='x', alpha=0.3, linestyle='--')
@@ -514,12 +608,13 @@ class MetricsVisualizer:
 def build_eval_config_string(args: argparse.Namespace) -> str:
     """
     Build evaluation configuration string from CLI arguments
+    MUST MATCH the exact naming scheme from full_evaluation_enhanced.py
     
     Args:
         args: Parsed command-line arguments
         
     Returns:
-        Configuration string (e.g., "clean_test_stain_tta_full")
+        Configuration string (e.g., "clean_test_stain_tta_full_sw_gaussian_refine_adaptive")
     """
     parts = []
     
@@ -532,8 +627,10 @@ def build_eval_config_string(args: argparse.Namespace) -> str:
         parts.append('human_test')
     elif args.clean_test:
         parts.append('clean_test')
+    elif args.clean_test_50_overlap:
+        parts.append('clean_test_50_overlap')
     else:
-        raise ValueError("No dataset specified. Use --val, --test, --human-test, or --clean-test")
+        raise ValueError("No dataset specified. Use --val, --test, --human-test, --clean-test, or --clean-test-50-overlap")
     
     # Data source
     if args.stain:
@@ -543,9 +640,34 @@ def build_eval_config_string(args: argparse.Namespace) -> str:
     else:
         raise ValueError("No data source specified. Use --stain or --original")
     
-    # TTA mode (optional)
+    # Enhancement suffixes (MUST match full_evaluation_enhanced.py logic)
+    enhancement_suffixes = []
+    
+    # TTA
     if args.tta_mode:
-        parts.append(f'tta_{args.tta_mode}')
+        enhancement_suffixes.append(f'tta_{args.tta_mode}')
+    
+    # Sliding window
+    if args.sliding_window:
+        sw_suffix = f'sw_{args.blend_mode}'
+        if args.overlap != 0.5:
+            sw_suffix += f'_o{int(args.overlap*100)}'
+        enhancement_suffixes.append(sw_suffix)
+    
+    # Boundary refinement
+    if args.boundary_refine:
+        refine_suffix = 'refine'
+        if args.refine_kernel != 5:
+            refine_suffix += f'{args.refine_kernel}'
+        enhancement_suffixes.append(refine_suffix)
+    
+    # Adaptive threshold
+    if args.adaptive_threshold:
+        enhancement_suffixes.append('adaptive')
+    
+    # Combine all parts
+    if enhancement_suffixes:
+        parts.extend(enhancement_suffixes)
     
     return '_'.join(parts)
 
@@ -558,23 +680,26 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # All checkpoints with clean-test + stain + tta-full
+  # All checkpoints (saves to model_comparison_plots/all/)
   python visualize_checkpoint_metrics.py --clean-test --stain --tta-full
   
-  # Specific checkpoints
-  python visualize_checkpoint_metrics.py --checkpoints 20251024_150723 20251101_023332 --clean-test --stain
+  # Specific checkpoints with named subfolder (saves to model_comparison_plots/best_models/)
+  python visualize_checkpoint_metrics.py --checkpoints 20251024_150723 20251101_023332 \
+      --clean-test --stain --name best_models
   
-  # Without TTA
-  python visualize_checkpoint_metrics.py --clean-test --stain
-  
-  # Custom output directory
+  # Custom output directory with all checkpoints (saves to my_plots/all/)
   python visualize_checkpoint_metrics.py --clean-test --stain --output ./my_plots/
+  
+  # ERROR: --name required when using --checkpoints
+  python visualize_checkpoint_metrics.py --checkpoints 20251024_150723 --clean-test --stain
         """
     )
     
     # Checkpoint selection
     parser.add_argument('--checkpoints', nargs='+', 
                        help='Specific checkpoint names/timestamps to visualize (default: all)')
+    parser.add_argument('--name', type=str,
+                       help='Subfolder name for output (required when using --checkpoints)')
     
     # Dataset selection (mutually exclusive, required)
     dataset_group = parser.add_mutually_exclusive_group(required=True)
@@ -594,9 +719,22 @@ Examples:
     source_group.add_argument('--original', action='store_true',
                              help='Use original data')
     
-    # TTA mode (optional)
+    # Enhancement flags (must match evaluation configuration)
     parser.add_argument('--tta-mode', type=str, choices=['minimal', 'basic', 'full'],
                        help='TTA mode (if evaluation used TTA)')
+    parser.add_argument('--sliding-window', action='store_true', default=False,
+                       help='Evaluation used sliding window inference')
+    parser.add_argument('--overlap', type=float, default=0.5,
+                       help='Overlap ratio for sliding window (0.0-0.75, default: 0.5)')
+    parser.add_argument('--blend-mode', type=str, default='gaussian',
+                       choices=['gaussian', 'linear', 'none'],
+                       help='Blending mode for sliding window (default: gaussian)')
+    parser.add_argument('--boundary-refine', action='store_true', default=False,
+                       help='Evaluation used morphological boundary refinement')
+    parser.add_argument('--refine-kernel', type=int, default=5,
+                       help='Kernel size for boundary refinement (default: 5)')
+    parser.add_argument('--adaptive-threshold', action='store_true', default=False,
+                       help='Evaluation used adaptive threshold optimization')
     
     # Output options
     parser.add_argument('--output', type=str, default='model_comparison_plots',
@@ -604,14 +742,28 @@ Examples:
     
     args = parser.parse_args()
     
+    # Validate: --name is required when using --checkpoints
+    if args.checkpoints and not args.name:
+        parser.error("--name is required when using --checkpoints to specify a subfolder name")
+    
     print("="*80)
     print("📊 CHECKPOINT METRICS VISUALIZATION")
     print("="*80)
     
     try:
+        # Determine output subfolder
+        if args.checkpoints:
+            subfolder = args.name  # Required by validation above
+        else:
+            subfolder = "all"
+        
+        # Build full output path
+        output_path = Path(args.output) / subfolder
+        
         # Build evaluation configuration string
         eval_config = build_eval_config_string(args)
         print(f"\n🔍 Evaluation configuration: {eval_config}")
+        print(f"📁 Output subfolder: {subfolder}")
         
         # Initialize extractor
         extractor = CheckpointMetricsExtractor()
@@ -656,13 +808,13 @@ Examples:
         
         # Create visualizations
         print(f"\n🎨 Creating visualizations...")
-        visualizer = MetricsVisualizer(args.output)
+        visualizer = MetricsVisualizer(str(output_path))
         
         # Plot 1: Dice comparison
-        dice_plot = visualizer.plot_dice_comparison(data, eval_config)
+        dice_plot = visualizer.plot_dice_comparison(data, eval_config, subfolder)
         
         # Plot 2: Performance metrics
-        perf_plot = visualizer.plot_performance_metrics(data, eval_config)
+        perf_plot = visualizer.plot_performance_metrics(data, eval_config, subfolder)
         
         # Save summary CSV
         csv_file = visualizer.save_summary_csv(data, eval_config)
