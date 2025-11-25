@@ -70,8 +70,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--opset",
         type=int,
-        default=17,
-        help="ONNX opset version (default: 17)",
+        default=13,
+        help="ONNX opset version (default: 13 for TensorRT compatibility)",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="Fixed batch size for TensorRT (default: 1)",
     )
     return parser.parse_args()
 
@@ -90,8 +96,24 @@ def main() -> int:
     print(f"    InceptionV3 base uses ImageNet weights (as in training).")
     keras_model.load_weights(str(args.weights), by_name=True, skip_mismatch=True)
 
-    print(f"🔹 Converting to ONNX (opset {args.opset})...")
-    onnx_model, _ = tf2onnx.convert.from_keras(keras_model, opset=args.opset)
+    print(f"🔹 Converting to ONNX (opset {args.opset}, batch_size={args.batch_size})...")
+    
+    # Create input signature with fixed batch size for TensorRT
+    input_signature = [tf.TensorSpec(
+        shape=(args.batch_size, 299, 299, 3),
+        dtype=tf.float32,
+        name='input_1'
+    )]
+    
+    onnx_model, _ = tf2onnx.convert.from_keras(
+        keras_model,
+        input_signature=input_signature,
+        opset=args.opset,
+        custom_ops=None,
+        custom_op_handlers=None,
+        custom_rewriter=None,
+        inputs_as_nchw=['input_1']  # TensorRT prefers NCHW format
+    )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "wb") as f:
@@ -99,9 +121,13 @@ def main() -> int:
 
     print(f"✅ Saved ONNX model to {args.output}")
     print(f"\nModel Info:")
-    print(f"  Input shape:  (1, 299, 299, 3)")
-    print(f"  Output shape: (1, 1) - adipose probability [0-1]")
+    print(f"  Input shape:  ({args.batch_size}, 299, 299, 3) - NHWC")
+    print(f"  Output shape: ({args.batch_size}, 1) - adipose probability [0-1]")
     print(f"  Dropout:      {args.dropout}")
+    print(f"  Opset:        {args.opset} (TensorRT compatible)")
+    print(f"\n💡 For TensorRT inference:")
+    print(f"  - Batch size is fixed at {args.batch_size}")
+    print(f"  - Use opset 11-13 for best compatibility")
     return 0
 
 

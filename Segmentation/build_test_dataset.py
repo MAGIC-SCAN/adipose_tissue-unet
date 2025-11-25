@@ -86,12 +86,13 @@ TEST_DEFAULTS = {
     "compression": "auto",
     "workers": None,          # None = cpu_count() - 1
     "neg_pct": 1.0,          # Include all negative tiles
-    "min_confidence": 2,      # Annotation confidence threshold
+    "min_confidence": 2,      # Annotation confidence threshold (test data should be certain)
     "stain_normalize": True,  # Enable SYBR Gold + Eosin stain normalization (color correction only)
     "reference_metadata": "src/utils/stain_reference_metadata.json",
-    "include_white": False,   # Exclude white tiles
-    "include_blurry": False,  # Exclude blurry tiles
-    "seed": 865,
+    "include_white": True,    # Trust annotators - keep white tiles by default
+    "include_blurry": True,   # Trust annotators - keep blurry tiles by default
+    "include_ambiguous": False,  # Exclude ambiguous tiles (0 < coverage < min_mask_ratio) by default to prevent label noise
+    "seed": GLOBAL_SEED,      # Load from seed.csv
 }
 
 # ------------------------------
@@ -212,6 +213,107 @@ def load_json_annotations(json_path: Path, min_confidence: int = 1) -> Tuple[Lis
     
     return polys, missing_confidence
 
+
+def slide_has_valid_annotations(json_path: Path, min_confidence: int) -> bool:
+    """
+    Check if slide has at least one annotation meeting confidence threshold.
+    
+    This ensures we only process slides that were actually annotated.
+    Slides with no valid annotations are skipped entirely.
+    
+    Args:
+        json_path: Path to JSON annotation file
+        min_confidence: Minimum confidence score to accept (1, 2, or 3)
+    
+    Returns:
+        True if slide has at least one valid annotation, False otherwise
+    """
+    with open(json_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    records = payload if isinstance(payload, list) else [payload]
+    
+    for ann in records:
+        if not isinstance(ann, dict):
+            continue
+        confidence = ann.get("confidenceScore")
+        # Check if this annotation meets confidence threshold
+        if confidence is None or confidence >= min_confidence:
+            # Check if it has valid polygon data
+            elements = ann.get("annotation", {}).get("elements", [])
+            for elem in elements:
+                if not isinstance(elem, dict):
+                    continue
+                if elem.get("type") == "polyline":
+                    pts = elem.get("points", [])
+                    if pts and len(pts) >= 3:
+                        return True  # Found at least one valid annotation
+    return False  # No valid annotations found
+
+
+def get_tile_annotations(json_path: Path, tile_bbox: Tuple[int, int, int, int], min_confidence: int) -> Tuple[List[np.ndarray], bool]:
+    """
+    Get annotations within tile bounds and flag tiles that only contain low-confidence marks.
+    
+    This prevents tiles with uncertain annotations from entering the test set,
+    ensuring test data quality.
+    
+    Args:
+        json_path: Path to JSON annotation file
+        tile_bbox: (x1, y1, x2, y2) tile bounding box in slide coordinates
+        min_confidence: Minimum confidence score to accept (1, 2, or 3)
+    
+    Returns:
+        (polygons, low_confidence_only): 
+            - polygons: List of polygon arrays meeting confidence threshold (shifted to tile coords)
+            - low_confidence_only: True if tile intersected only low-confidence annotations
+    """
+    with open(json_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    records = payload if isinstance(payload, list) else [payload]
+    polys: List[np.ndarray] = []
+    has_low_conf = False
+    has_high_conf = False
+    x1, y1, x2, y2 = tile_bbox
+    
+    for ann in records:
+        if not isinstance(ann, dict):
+            continue
+        confidence = ann.get("confidenceScore")
+        
+        elements = ann.get("annotation", {}).get("elements", [])
+        for elem in elements:
+            if not isinstance(elem, dict) or elem.get("type") != "polyline":
+                continue
+            pts = elem.get("points", [])
+            if not pts or len(pts) < 3:
+                continue
+                
+            # Check if polygon intersects with tile
+            coords = np.array([[int(round(p[0])), int(round(p[1]))] for p in pts], dtype=np.int32)
+            if len(coords) < 3:
+                continue
+                
+            # Simple bounding box intersection check
+            poly_xs = coords[:, 0]
+            poly_ys = coords[:, 1]
+            if (poly_xs.max() < x1 or poly_xs.min() > x2 or 
+                poly_ys.max() < y1 or poly_ys.min() > y2):
+                continue  # Polygon doesn't intersect tile
+            
+            # Polygon intersects tile - check confidence
+            if confidence is not None and confidence < min_confidence:
+                has_low_conf = True
+                continue
+            # Shift polygon coordinates to tile-local space
+            local_coords = coords - np.array([x1, y1])
+            polys.append(local_coords)
+            has_high_conf = True
+    
+    return polys, (has_low_conf and not has_high_conf)
+
+
 def create_binary_mask(polygons: List[np.ndarray], width: int, height: int) -> np.ndarray:
     """Rasterize many polygons into a single 0/1 mask."""
     mask = np.zeros((height, width), dtype=np.uint8)
@@ -273,13 +375,20 @@ def _process_single_json_worker(args_tuple):
 
 def build_masks_from_json(images_dir: Path, masks_dir: Path, output_build_dir: Path, 
                          target_mask: str, args):
-    """Build binary masks from JSON annotations."""
+    """Build binary masks from JSON annotations with slide-level confidence filtering.
+    
+    Returns:
+        Dict mapping base image names to their JSON annotation paths for tile-level filtering.
+    """
     print(f"[Masks] Building masks for target class '{target_mask}'...")
     
-    # Find image files
-    image_files = list(images_dir.glob("*.jpg"))
+    # Find image files (support multiple formats)
+    image_files = []
+    for ext in ['.jpg', '.jpeg', '.png', '.tif', '.tiff']:
+        image_files.extend(images_dir.glob(f"*{ext}"))
+    
     if not image_files:
-        raise ValueError(f"No .jpg files found in {images_dir}")
+        raise ValueError(f"No image files found in {images_dir}")
     
     image_stems = {f.stem for f in image_files}
     print(f"[Masks] Found {len(image_stems)} images")
@@ -322,15 +431,43 @@ def build_masks_from_json(images_dir: Path, masks_dir: Path, output_build_dir: P
                 files_without_timestamps.sort(key=lambda p: p.stat().st_mtime, reverse=True)
                 latest_by_base[base] = files_without_timestamps[0]
     
-    print(f"[Masks] Processing {len(latest_by_base)} image/mask pairs")
+    # Apply slide-level confidence filtering
+    min_confidence = getattr(args, 'min_confidence', 2)
+    valid_slides = {}
+    skipped_slides = {}
     
-    # Prepare work items
+    for base, jpath in latest_by_base.items():
+        if slide_has_valid_annotations(jpath, min_confidence):
+            valid_slides[base] = jpath
+        else:
+            skipped_slides[base] = f"no_annotations_conf>={min_confidence}"
+    
+    print(f"[Masks] Slide-level filtering: {len(valid_slides)}/{len(latest_by_base)} valid (min_confidence={min_confidence})")
+    if skipped_slides:
+        print(f"[Masks] Skipped {len(skipped_slides)} slides with insufficient confidence:")
+        for base in sorted(list(skipped_slides.keys())[:5]):
+            print(f"  - {base}")
+        if len(skipped_slides) > 5:
+            print(f"  ... and {len(skipped_slides) - 5} more")
+    
+    if not valid_slides:
+        raise ValueError(f"No slides with annotations meeting confidence threshold {min_confidence}")
+    
+    # Prepare work items for valid slides only
     work_items = []
     size_cache = {}
     
-    for base, jpath in latest_by_base.items():
-        img_path = images_dir / f"{base}.jpg"
-        if not img_path.exists():
+    for base, jpath in valid_slides.items():
+        # Find image file (support multiple formats)
+        img_path = None
+        for ext in ['.jpg', '.jpeg', '.png', '.tif', '.tiff']:
+            candidate = images_dir / f"{base}{ext}"
+            if candidate.exists():
+                img_path = candidate
+                break
+        
+        if not img_path:
+            print(f"[WARN] No image file found for {base}")
             continue
             
         if base in size_cache:
@@ -341,11 +478,12 @@ def build_masks_from_json(images_dir: Path, masks_dir: Path, output_build_dir: P
         
         work_items.append((
             str(jpath), target_mask, base, str(img_path), width, height,
-            args.compression, str(output_build_dir / "masks"), args.min_confidence
+            args.compression, str(output_build_dir / "masks"), min_confidence
         ))
     
     if not work_items:
-        raise ValueError("No valid image/mask pairs found")
+        raise ValueError("No valid image/mask pairs found after confidence filtering")
+    
     
     # Process with multiprocessing
     n_workers = args.workers if args.workers else max(1, cpu_count() - 1)
@@ -380,6 +518,9 @@ def build_masks_from_json(images_dir: Path, masks_dir: Path, output_build_dir: P
             print(f"  - {fname}")
         if len(missing_confidence_files) > 5:
             print(f"  ... and {len(missing_confidence_files) - 5} more")
+    
+    # Return mapping of base -> json_path for tile-level confidence filtering
+    return valid_slides
 
 def prepare_target_masks(output_build_dir: Path, target_mask: str, args):
     """Prepare target masks with subtraction and morphology operations."""
@@ -500,8 +641,16 @@ def tile_coords(h: int, w: int, tile: int, stride: int):
     
     return coords
 
-def tile_and_filter(images_dir: Path, output_build_dir: Path, target_mask: str, args):
-    """Extract tiles from images and filter them."""
+def tile_and_filter(images_dir: Path, output_build_dir: Path, target_mask: str, args, json_paths: Dict[str, Path]):
+    """Extract tiles from images and filter them with tile-level confidence checking.
+    
+    Args:
+        images_dir: Directory containing test images
+        output_build_dir: Build output directory
+        target_mask: Target mask class name
+        args: Command-line arguments
+        json_paths: Mapping of base image names to JSON annotation paths
+    """
     print(f"[Tiling] Processing images with tile={args.tile_size}, stride={args.stride}")
     
     # Setup directories
@@ -538,6 +687,12 @@ def tile_and_filter(images_dir: Path, output_build_dir: Path, target_mask: str, 
     neg_candidates = []
     batch_size = 16
     jpeg_params_cached = jpeg_params(args.jpeg_quality)
+    
+    # Tile-level confidence filtering stats
+    tiles_skipped_low_conf = 0
+    tiles_skipped_no_json = 0
+    tiles_skipped_ambiguous = 0
+    min_confidence = getattr(args, 'min_confidence', 2)
     
     for img_path in tqdm(image_files, desc="Tiling images", unit="img"):
         base = img_path.stem
@@ -605,12 +760,39 @@ def tile_and_filter(images_dir: Path, output_build_dir: Path, target_mask: str, 
                 pos_ratio = float(m_tile.sum()) / (args.tile_size * args.tile_size)
                 msk_out_path = tiles_msk_dir / out_name.replace('.jpg', '.tif')
                 
+                # Tile-level confidence filtering for positive tiles
+                # If tile has mask coverage, check if annotations meet confidence threshold
+                if pos_ratio > 0:
+                    json_path = json_paths.get(base)
+                    if json_path and json_path.exists():
+                        tile_bbox = (xs, ys, xs + args.tile_size, ys + args.tile_size)
+                        tile_polys, has_low_conf = get_tile_annotations(json_path, tile_bbox, min_confidence)
+                        
+                        # Skip tiles that only contain low-confidence annotations
+                        if has_low_conf:
+                            tiles_skipped_low_conf += 1
+                            continue
+                    elif pos_ratio > 0:
+                        # Positive tile but no JSON to validate - warn and skip for safety
+                        tiles_skipped_no_json += 1
+                        continue
+                
+                # Exclude ambiguous tiles: has some mask but below threshold
+                # These are neither clear positives nor clear negatives
+                # For test: exclude by default unless --include-ambiguous is set (allows testing edge cases)
+                if 0 < pos_ratio < args.min_mask_ratio:
+                    if not getattr(args, 'include_ambiguous', False):
+                        tiles_skipped_ambiguous += 1
+                        continue
+                    # With include_ambiguous=true, keep as negative
+                    # (below threshold but worth evaluating model performance on edge cases)
+
                 if pos_ratio >= args.min_mask_ratio:
                     # Positive tile → keep mask immediately
                     _save_tiff_mask(msk_out_path, m_tile, compression=args.compression)
                     pos_kept += 1
                 else:
-                    # Negative candidate
+                    # Negative candidate (pos_ratio == 0) → record for potential zero-mask writing later
                     neg_candidates.append(msk_out_path)
     
     # Handle negative tiles
@@ -632,6 +814,17 @@ def tile_and_filter(images_dir: Path, output_build_dir: Path, target_mask: str, 
         total_neg_written = len(chosen_paths)
     
     print(f"[Tiling] Positives kept: {pos_kept} | Negatives written: {total_neg_written}")
+    
+    # Report tile-level filtering stats
+    if tiles_skipped_low_conf > 0 or tiles_skipped_no_json > 0 or tiles_skipped_ambiguous > 0:
+        print(f"[Tiling] Tile-level filtering (min_confidence={min_confidence}):")
+        if tiles_skipped_low_conf > 0:
+            print(f"  - Skipped {tiles_skipped_low_conf} tiles with only low-confidence annotations")
+        if tiles_skipped_no_json > 0:
+            print(f"  - Skipped {tiles_skipped_no_json} positive tiles with missing JSON annotations")
+        if tiles_skipped_ambiguous > 0:
+            print(f"  - Skipped {tiles_skipped_ambiguous} ambiguous tiles (0 < coverage < min_mask_ratio)")
+    
     return pos_kept + total_neg_written
 
 def copy_final_dataset(output_build_dir: Path, output_dir: Path, target_mask: str):
@@ -715,13 +908,17 @@ def parse_args():
     parser.add_argument("--min-mask-ratio", type=float, default=TEST_DEFAULTS["min_mask_ratio"],
                        help="Minimum positive mask fraction to keep a tile")
     
-    # Test-specific overrides
+    # Test-specific quality filter overrides (trust annotators by default)
     parser.add_argument("--include-white", dest="include_white", action="store_true",
                        default=TEST_DEFAULTS["include_white"],
-                       help="Include white tiles in test dataset (override quality filter)")
+                       help="Include white tiles in test dataset (default: True, trusting annotator judgment)")
+    parser.add_argument("--exclude-white", dest="include_white", action="store_false",
+                       help="Exclude white tiles from test dataset")
     parser.add_argument("--include-blurry", dest="include_blurry", action="store_true",
                        default=TEST_DEFAULTS["include_blurry"], 
-                       help="Include blurry tiles in test dataset (override quality filter)")
+                       help="Include blurry tiles in test dataset (default: True, trusting annotator judgment)")
+    parser.add_argument("--exclude-blurry", dest="include_blurry", action="store_false",
+                       help="Exclude blurry tiles from test dataset")
     
     # Output parameters
     parser.add_argument("--jpeg-quality", type=int, default=TEST_DEFAULTS["jpeg_quality"],
@@ -736,7 +933,8 @@ def parse_args():
     parser.add_argument("--neg-pct", type=float, default=TEST_DEFAULTS["neg_pct"],
                        help="Target fraction of negative tiles in final dataset")
     parser.add_argument("--min-confidence", type=int, default=TEST_DEFAULTS["min_confidence"],
-                       choices=[1, 2, 3], help="Minimum annotation confidence score")
+                       choices=[1, 2, 3], 
+                       help="Minimum annotation confidence score (1=uncertain, 2=confident with artifacts, 3=confident clean). Default: 2 for test data quality")
     parser.add_argument("--seed", type=int, default=TEST_DEFAULTS["seed"],
                        help="Random seed for reproducibility")
     
@@ -747,6 +945,14 @@ def parse_args():
     parser.add_argument("--no-stain-normalize", dest="stain_normalize", action="store_false")
     parser.add_argument("--reference-metadata", type=str, default=TEST_DEFAULTS["reference_metadata"],
                        help="Path to reference metadata JSON file for stain normalization")
+    
+    # Ambiguous tile handling (mirrors build_class_dataset.py)
+    parser.add_argument("--include-ambiguous", dest="include_ambiguous", action="store_true",
+                       default=TEST_DEFAULTS["include_ambiguous"],
+                       help="Include ambiguous tiles (0 < coverage < min_mask_ratio) as negatives. "
+                            "Default: False (excludes ambiguous to prevent label noise).")
+    parser.add_argument("--exclude-ambiguous", dest="include_ambiguous", action="store_false",
+                       help="Exclude ambiguous tiles to prevent label noise in test set (default behavior).")
     
     return parser.parse_args()
 
@@ -824,14 +1030,14 @@ def main():
         raise ValueError(f"Cannot subtract '{args.subtract_class}' from itself (target='{args.target_mask}')")
     
     try:
-        # Step 1: Build masks from JSON
-        build_masks_from_json(images_dir, masks_dir, output_build_dir, args.target_mask, args)
+        # Step 1: Build masks from JSON and get JSON paths for tile-level filtering
+        json_paths = build_masks_from_json(images_dir, masks_dir, output_build_dir, args.target_mask, args)
         
         # Step 2: Prepare target masks (subtraction, morphology)
         prepare_target_masks(output_build_dir, args.target_mask, args)
         
-        # Step 3: Tile and filter
-        total_tiles = tile_and_filter(images_dir, output_build_dir, args.target_mask, args)
+        # Step 3: Tile and filter with tile-level confidence checking
+        total_tiles = tile_and_filter(images_dir, output_build_dir, args.target_mask, args, json_paths)
         
         # Step 4: Copy final dataset
         final_tiles = copy_final_dataset(output_build_dir, output_dir, args.target_mask)

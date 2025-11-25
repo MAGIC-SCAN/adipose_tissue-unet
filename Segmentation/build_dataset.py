@@ -125,20 +125,22 @@ DEFAULTS = {
     "compression": "auto",
     "workers": None,  # None = cpu_count() - 1
     "neg_pct": 0.40,   # fraction of negative tissue tiles in final dataset. 0 disables.
-    "keep_white": False,  # Drop white tiles (default: False for segmentation to avoid trivial examples)
-    "keep_blurry": False, # Drop blurry tiles (default: False for segmentation to avoid label noise)
+    "keep_white": True,  # Trust annotators - keep white tiles by default
+    "keep_blurry": True, # Trust annotators - keep blurry tiles by default
     "stain_normalize": True,  # Enable SYBR Gold + Eosin stain normalization (color correction only)
     "reference_path": None,  # Path to reference image for stain normalization
     "reference_metadata": "src/utils/stain_reference_metadata.json",  # Updated path
     "include_test_set": False,  # Include test set from test subdirectories (disabled by default)
-    "min_confidence": 2,  # Minimum confidence score for annotations (1, 2, or 3)
+    "min_confidence_train": 1,  # Training uses all confidence levels (1, 2, 3)
+    "min_confidence_val": 2,    # Validation uses certain annotations only (2, 3)
     # Test-specific parameters (more comprehensive evaluation)
     "test_min_mask_ratio": 0.0,    # Include all mask densities for test set
     "test_stride": 1024,           # No overlap for test tiles
     "test_neg_pct": 1.0,          # Include all negative tiles in test set
-    "test_min_confidence": 2,      # Same confidence threshold as train/val
+    "test_min_confidence": 2,      # Same confidence threshold as val
     "test_include_white": False,   # Flag to include white tiles in test set
     "test_include_blurry": False,  # Flag to include blurry tiles in test set
+    "include_ambiguous": False,    # Include ambiguous tiles (0 < coverage < min_mask_ratio) as negatives
 }
 
 OVERLAY_ALPHA = 0.35
@@ -242,7 +244,8 @@ def create_build_log(args, build_root: Path, stage: str, **kwargs):
             "workers": args.workers,
             "neg_pct": args.neg_pct,
             "include_test_set": args.include_test_set,
-            "min_confidence": getattr(args, 'min_confidence', 2)
+            "min_confidence_train": getattr(args, 'min_confidence_train', 1),
+            "min_confidence_val": getattr(args, 'min_confidence_val', 2)
         },
         "stain_normalization": {
             "enabled": getattr(args, 'stain_normalize', False),
@@ -549,37 +552,72 @@ def validate_inputs(target_bases: Set[str], target_cls: str) -> bool:
 # ------------------------------
 # JSON -> 0/1 mask generation (Optimization #1: Parallel)
 # ------------------------------
-def collect_target_bases(target_cls: str, exclude_test_stems: Set[str] = None) -> Set[str]:
-    """Collect training/validation image stems from main directories, excluding test duplicates."""
+def collect_target_bases(target_cls: str, exclude_test_stems: Set[str] = None, min_confidence: int = 1) -> Tuple[Set[str], Dict[str, str]]:
+    """
+    Collect training/validation image stems from main directories, excluding test duplicates.
+    Applies slide-level confidence filtering to ensure only slides with valid annotations are processed.
+    
+    Args:
+        target_cls: Target class name (e.g., 'fat')
+        exclude_test_stems: Set of test image stems to exclude
+        min_confidence: Minimum confidence score for slide validation
+    
+    Returns:
+        Tuple of (valid_bases, skip_reasons) where skip_reasons maps skipped stems to reason strings
+    """
     if exclude_test_stems is None:
         exclude_test_stems = set()
     
     cls_json_dir = JSON_MASKS_DIR / target_cls
     if not cls_json_dir.exists():
         print(f"[ERROR] Target JSON folder missing: {cls_json_dir}")
-        return set()
+        return set(), {}
     
     bases: Set[str] = set()
+    skip_reasons: Dict[str, str] = {}
+    
     for j in sorted(cls_json_dir.glob("*.json")):
         base = parse_image_stem_from_json(j, target_cls)
         
         # Skip if this image is in the test folder
         if base in exclude_test_stems:
+            skip_reasons[base] = "in_test_set"
+            continue
+        
+        # Slide-level validation: skip slides with no annotations meeting confidence threshold
+        if not slide_has_valid_annotations(j, min_confidence):
+            skip_reasons[base] = f"no_annotations_conf>={min_confidence}"
             continue
             
         bases.add(base)
     
+    skipped_count = len(skip_reasons)
     if exclude_test_stems:
-        print(f"[Scope] Found {len(bases)} training/validation slides after excluding {len(exclude_test_stems)} test images.")
+        test_skipped = sum(1 for reason in skip_reasons.values() if reason == "in_test_set")
+        conf_skipped = skipped_count - test_skipped
+        print(f"[Scope] Found {len(bases)} training/validation slides after excluding {test_skipped} test images and {conf_skipped} slides with insufficient confidence.")
     else:
         print(f"[Scope] Found {len(bases)} training/validation slide(s) with target '{target_cls}' JSONs.")
-    return bases
+        if skipped_count > 0:
+            print(f"[Scope] Skipped {skipped_count} slides: no annotations with confidence >= {min_confidence}")
+    
+    return bases, skip_reasons
 
-def collect_test_bases(target_cls: str) -> Set[str]:
-    """Collect test image stems from test subdirectory (annotations in main Masks folder)."""
+def collect_test_bases(target_cls: str, min_confidence: int = 2) -> Tuple[Set[str], Dict[str, str]]:
+    """
+    Collect test image stems from test subdirectory (annotations in main Masks folder).
+    Applies slide-level confidence filtering.
+    
+    Args:
+        target_cls: Target class name (e.g., 'fat')
+        min_confidence: Minimum confidence score for test slide validation
+    
+    Returns:
+        Tuple of (valid_bases, skip_reasons) where skip_reasons maps skipped stems to reason strings
+    """
     if not TEST_PSEUDO_DIR.exists():
         print(f"[Test] No test directory found: {TEST_PSEUDO_DIR}")
-        return set()
+        return set(), {}
     
     # Get all image stems from test directory (supporting multiple formats)
     test_stems = get_test_image_stems(TEST_PSEUDO_DIR)
@@ -588,24 +626,46 @@ def collect_test_bases(target_cls: str) -> Set[str]:
     cls_json_dir = JSON_MASKS_DIR / target_cls
     if not cls_json_dir.exists():
         print(f"[Test] No JSON directory for '{target_cls}': {cls_json_dir}")
-        return set()
+        return set(), {}
     
     verified_bases = set()
+    skip_reasons: Dict[str, str] = {}
+    
     for stem in test_stems:
         # Look for annotation in MAIN masks directory
         # Try exact match first, then pattern match for timestamped files
         exact_match = cls_json_dir / f"{stem}_{target_cls}_annotations.json"
+        json_path = None
+        
         if exact_match.exists():
-            verified_bases.add(stem)
+            json_path = exact_match
         else:
             # Try pattern match for timestamped annotations
             pattern = f"{stem}_{target_cls}_*.json"
             matching_jsons = list(cls_json_dir.glob(pattern))
             if matching_jsons:
-                verified_bases.add(stem)
+                # Use the most recent annotation (by filename timestamp)
+                json_path = max(matching_jsons, key=lambda p: extract_filename_timestamp(p) or datetime.min)
+        
+        if json_path is None:
+            skip_reasons[stem] = "no_annotation_file"
+            continue
+        
+        # Slide-level validation for test set
+        if not slide_has_valid_annotations(json_path, min_confidence):
+            skip_reasons[stem] = f"no_annotations_conf>={min_confidence}"
+            continue
+        
+        verified_bases.add(stem)
     
+    skipped_count = len(skip_reasons)
     print(f"[Test] Found {len(verified_bases)} test images with annotations in main Masks/{target_cls}/")
-    return verified_bases
+    if skipped_count > 0:
+        no_file = sum(1 for r in skip_reasons.values() if r == "no_annotation_file")
+        low_conf = sum(1 for r in skip_reasons.values() if r.startswith("no_annotations_conf"))
+        print(f"[Test] Skipped {skipped_count} test images: {no_file} missing annotations, {low_conf} insufficient confidence")
+    
+    return verified_bases, skip_reasons
 
 def validate_no_overlap(training_bases: Set[str], test_bases: Set[str]) -> bool:
     """Ensure no overlap between training and test sets."""
@@ -686,6 +746,106 @@ def load_json_annotations(json_path: Path, min_confidence: int = 1) -> Tuple[Lis
     return polys, missing_confidence
 
 
+def slide_has_valid_annotations(json_path: Path, min_confidence: int) -> bool:
+    """
+    Check if slide has at least one annotation meeting confidence threshold.
+    
+    This ensures we only process slides that were actually annotated.
+    Slides with no valid annotations are skipped entirely.
+    
+    Args:
+        json_path: Path to JSON annotation file
+        min_confidence: Minimum confidence score to accept (1, 2, or 3)
+    
+    Returns:
+        True if slide has at least one valid annotation, False otherwise
+    """
+    with open(json_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    records = payload if isinstance(payload, list) else [payload]
+    
+    for ann in records:
+        if not isinstance(ann, dict):
+            continue
+        confidence = ann.get("confidenceScore")
+        # Check if this annotation meets confidence threshold
+        if confidence is None or confidence >= min_confidence:
+            # Check if it has valid polygon data
+            elements = ann.get("annotation", {}).get("elements", [])
+            for elem in elements:
+                if not isinstance(elem, dict):
+                    continue
+                if elem.get("type") == "polyline":
+                    pts = elem.get("points", [])
+                    if pts and len(pts) >= 3:
+                        return True  # Found at least one valid annotation
+    return False  # No valid annotations found
+
+
+def get_tile_annotations(json_path: Path, tile_bbox: Tuple[int, int, int, int], min_confidence: int) -> Tuple[List[np.ndarray], bool]:
+    """
+    Get annotations within tile bounds and flag tiles that only contain low-confidence marks.
+    
+    This prevents tiles with uncertain annotations from entering validation/test sets,
+    while allowing training on all annotated data.
+    
+    Args:
+        json_path: Path to JSON annotation file
+        tile_bbox: (x1, y1, x2, y2) tile bounding box in slide coordinates
+        min_confidence: Minimum confidence score to accept (1, 2, or 3)
+    
+    Returns:
+        (polygons, low_confidence_only): 
+            - polygons: List of polygon arrays meeting confidence threshold (shifted to tile coords)
+            - low_confidence_only: True if tile intersected only low-confidence annotations
+    """
+    with open(json_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    records = payload if isinstance(payload, list) else [payload]
+    polys: List[np.ndarray] = []
+    has_low_conf = False
+    has_high_conf = False
+    x1, y1, x2, y2 = tile_bbox
+    
+    for ann in records:
+        if not isinstance(ann, dict):
+            continue
+        confidence = ann.get("confidenceScore")
+        
+        elements = ann.get("annotation", {}).get("elements", [])
+        for elem in elements:
+            if not isinstance(elem, dict) or elem.get("type") != "polyline":
+                continue
+            pts = elem.get("points", [])
+            if not pts or len(pts) < 3:
+                continue
+                
+            # Check if polygon intersects with tile
+            coords = np.array([[int(round(p[0])), int(round(p[1]))] for p in pts], dtype=np.int32)
+            if len(coords) < 3:
+                continue
+                
+            # Simple bounding box intersection check
+            poly_xs = coords[:, 0]
+            poly_ys = coords[:, 1]
+            if (poly_xs.max() < x1 or poly_xs.min() > x2 or 
+                poly_ys.max() < y1 or poly_ys.min() > y2):
+                continue  # Polygon doesn't intersect tile
+            
+            # Polygon intersects tile - check confidence
+            if confidence is not None and confidence < min_confidence:
+                has_low_conf = True
+                continue
+            # Shift polygon coordinates to tile-local space
+            local_coords = coords - np.array([x1, y1])
+            polys.append(local_coords)
+            has_high_conf = True
+    
+    return polys, (has_low_conf and not has_high_conf)
+
+
 def create_binary_mask(polygons: List[np.ndarray], width: int, height: int) -> np.ndarray:
     """Rasterize many polygons into a single 0/1 mask."""
     mask = np.zeros((height, width), dtype=np.uint8)
@@ -754,8 +914,9 @@ def build_masks_from_json(args, training_bases: Set[str], test_bases: Set[str]):
     masks_out_root = BUILD_ROOT / "masks"
     overlays_root = BUILD_ROOT / "overlays"
     
-    # Use configurable confidence threshold
-    min_confidence = getattr(args, 'min_confidence', 2)
+    # Use training confidence threshold for mask generation (most permissive)
+    # Split-specific filtering happens during tiling phase
+    min_confidence = getattr(args, 'min_confidence_train', 1)
     
     # Process both training and test sets with identical settings
     all_work_items = []
@@ -1113,9 +1274,22 @@ def precompute_tile_plans_dual(training_bases: Set[str], test_bases: Set[str], a
             continue
         
         coords = tile_coords(h, w, args.tile_size, training_stride)
+        
+        # Find JSON annotation file for tile-level confidence filtering
+        json_path = JSON_MASKS_DIR / target_mask / f"{base}_{target_mask}_annotations.json"
+        if not json_path.exists():
+            # Try pattern match for timestamped files
+            pattern = f"{base}_{target_mask}_*.json"
+            matching_jsons = list((JSON_MASKS_DIR / target_mask).glob(pattern))
+            if matching_jsons:
+                json_path = max(matching_jsons, key=lambda p: extract_filename_timestamp(p) or datetime.min)
+            else:
+                json_path = None
+        
         tile_plans[base] = {
             'img_path': img_path,
             'msk_path': msk_path,
+            'json_path': json_path,
             'width': w,
             'height': h,
             'coords': coords,
@@ -1139,9 +1313,22 @@ def precompute_tile_plans_dual(training_bases: Set[str], test_bases: Set[str], a
             continue
         
         coords = tile_coords(h, w, args.tile_size, test_stride)
+        
+        # Find JSON annotation file for tile-level confidence filtering
+        json_path = JSON_MASKS_DIR / target_mask / f"{base}_{target_mask}_annotations.json"
+        if not json_path.exists():
+            # Try pattern match for timestamped files
+            pattern = f"{base}_{target_mask}_*.json"
+            matching_jsons = list((JSON_MASKS_DIR / target_mask).glob(pattern))
+            if matching_jsons:
+                json_path = max(matching_jsons, key=lambda p: extract_filename_timestamp(p) or datetime.min)
+            else:
+                json_path = None
+        
         tile_plans[base] = {
             'img_path': img_path,
             'msk_path': msk_path,
+            'json_path': json_path,
             'width': w,
             'height': h,
             'coords': coords,
@@ -1193,6 +1380,11 @@ def tile_and_filter(args, training_bases: Set[str], test_bases: Set[str]):
     test_pos_kept = 0
     neg_candidates = []  # store (tiles_msk_path: Path) for potential negatives (to write zero-mask later)
     
+    # Tile-level confidence filtering stats
+    tiles_skipped_low_conf = 0
+    tiles_skipped_no_json = 0
+    tiles_skipped_ambiguous = 0
+    
     # Pre-compute tile plans for both training and test (Optimization #4)
     tile_plans = precompute_tile_plans_dual(training_bases, test_bases, args, args.target_mask)
     
@@ -1210,7 +1402,21 @@ def tile_and_filter(args, training_bases: Set[str], test_bases: Set[str]):
     for base, plan in tqdm(tile_plans.items(), desc="Tiling images", unit="img", smoothing=0.1):
         img_path = plan['img_path']
         msk_path = plan['msk_path']
+        json_path = plan.get('json_path')
         coords = plan['coords']
+        data_type = plan['data_type']
+        
+        # Determine split-aware confidence threshold
+        # For training data: use min_confidence_train
+        # For test data: use test_min_confidence
+        # Note: validation tiles are assigned AFTER tiling, so we use min_confidence_val as fallback
+        if data_type == 'test':
+            tile_min_confidence = getattr(args, 'test_min_confidence', 2)
+        else:
+            # For training data that will be split into train/val later
+            # Use the more permissive threshold (train) during tiling
+            # Tiles destined for validation will be filtered if needed
+            tile_min_confidence = getattr(args, 'min_confidence_train', 1)
         
         # Load mask once
         msk = tiff.imread(str(msk_path)).astype(np.uint8)
@@ -1283,11 +1489,37 @@ def tile_and_filter(args, training_bases: Set[str], test_bases: Set[str]):
                 pos_ratio = float(m_tile.sum()) / (args.tile_size * args.tile_size)
                 msk_out_path = tiles_msk_dir / out_name.replace('.jpg', '.tif')
                 
+                # Tile-level confidence filtering for positive tiles
+                # If tile has mask coverage, check if annotations meet confidence threshold
+                if pos_ratio > 0 and json_path and json_path.exists():
+                    tile_bbox = (xs, ys, xs + args.tile_size, ys + args.tile_size)
+                    tile_polys, has_low_conf = get_tile_annotations(json_path, tile_bbox, tile_min_confidence)
+                    
+                    # Skip tiles that only contain low-confidence annotations
+                    if has_low_conf:
+                        tiles_skipped_low_conf += 1
+                        continue
+                elif pos_ratio > 0 and (not json_path or not json_path.exists()):
+                    # Positive tile but no JSON to validate - warn and skip for safety
+                    tiles_skipped_no_json += 1
+                    continue
+                
                 # Use data-type-specific mask ratio threshold
                 if data_type == 'test':
                     min_mask_ratio = getattr(args, 'test_min_mask_ratio', 0.0)
                 else:
                     min_mask_ratio = args.min_mask_ratio
+
+                # Exclude ambiguous tiles: has some mask but below threshold
+                # These are neither clear positives nor clear negatives
+                # For training: always exclude (prevents label noise)
+                # For test: exclude unless --include-ambiguous is true (allows testing edge cases)
+                if 0 < pos_ratio < min_mask_ratio:
+                    if data_type == 'training' or not getattr(args, 'include_ambiguous', False):
+                        tiles_skipped_ambiguous += 1
+                        continue
+                    # For test with include_ambiguous=true, keep as negative
+                    # (below threshold but worth evaluating model performance on edge cases)
 
                 if pos_ratio >= min_mask_ratio:
                     # Positive tile → keep mask immediately
@@ -1297,7 +1529,7 @@ def tile_and_filter(args, training_bases: Set[str], test_bases: Set[str]):
                     else:
                         test_pos_kept += 1
                 else:
-                    # Negative candidate → record for potential zero-mask writing later
+                    # Negative candidate (pos_ratio == 0) → record for potential zero-mask writing later
                     neg_candidates.append((msk_out_path, data_type))
 
     # --- Finalize negative fraction by writing zero-masks for data-type-aware subsets ---
@@ -1348,6 +1580,16 @@ def tile_and_filter(args, training_bases: Set[str], test_bases: Set[str]):
     print(f"[Tiling] Positives kept: {training_pos_kept + test_pos_kept} | Total negatives written: {total_neg_written}")
     print(f"[Tiling] Training negatives: {len(training_candidates)} candidates | Test negatives: {len(test_candidates)} candidates")
     print(f"[Tiling] Training neg%: {args.neg_pct:.1%} | Test neg%: {getattr(args, 'test_neg_pct', 1.0):.1%}")
+    
+    # Report tile-level filtering stats
+    if tiles_skipped_low_conf > 0 or tiles_skipped_no_json > 0 or tiles_skipped_ambiguous > 0:
+        print(f"[Tiling] Tile-level filtering (min_confidence varies by split):")
+        if tiles_skipped_low_conf > 0:
+            print(f"  - Skipped {tiles_skipped_low_conf} tiles with only low-confidence annotations")
+        if tiles_skipped_no_json > 0:
+            print(f"  - Skipped {tiles_skipped_no_json} positive tiles with missing JSON annotations")
+        if tiles_skipped_ambiguous > 0:
+            print(f"  - Skipped {tiles_skipped_ambiguous} ambiguous tiles (0 < coverage < min_mask_ratio)")
 
 
 
@@ -1554,15 +1796,15 @@ def parse_args():
     p.add_argument("--invert-input", action="store_true",
                    help="Invert image intensities before filtering/tiling (useful for black-on-white inputs)")
     
-    # White and blurry tile handling (optimized for segmentation)
+    # White and blurry tile handling (trust annotators by default)
     p.add_argument("--keep-white", action="store_true", default=DEFAULTS["keep_white"],
-                   help="Keep white tiles as negatives (default: False for segmentation).")
+                   help="Keep white tiles (default: True, trusting annotator judgment).")
     p.add_argument("--drop-white", action="store_false", dest="keep_white",
-                   help="Drop white tiles (default behavior for segmentation).")
+                   help="Drop white tiles (override default to exclude white regions).")
     p.add_argument("--keep-blurry", action="store_true", default=DEFAULTS["keep_blurry"],
-                   help="Keep blurry tiles as negatives (default: False for segmentation).")
+                   help="Keep blurry tiles (default: True, trusting annotator judgment).")
     p.add_argument("--drop-blurry", action="store_false", dest="keep_blurry",
-                   help="Drop blurry tiles (default behavior for segmentation).")
+                   help="Drop blurry tiles (override default to exclude blurry regions).")
     
     p.add_argument("--val-ratio", type=float, default=DEFAULTS["val_ratio"], 
                    help="Validation ratio (0..1)")
@@ -1606,10 +1848,13 @@ def parse_args():
                    help="Path to reference metadata JSON file")
     
     
-    # Confidence threshold for annotation filtering
-    p.add_argument("--min-confidence", type=int, default=DEFAULTS["min_confidence"],
+    # Confidence threshold for annotation filtering (split-specific)
+    p.add_argument("--min-confidence-train", type=int, default=DEFAULTS["min_confidence_train"],
                    choices=[1, 2, 3], 
-                   help="Minimum confidence score for annotations (1=low, 2=medium, 3=high)")
+                   help="Training minimum confidence score (1=uncertain, 2=confident with artifacts, 3=confident clean). Default: 1 (all annotations)")
+    p.add_argument("--min-confidence-val", type=int, default=DEFAULTS["min_confidence_val"],
+                   choices=[1, 2, 3],
+                   help="Validation minimum confidence score. Default: 2 (certain annotations only)")
     
     # Test-specific parameters for comprehensive evaluation
     p.add_argument("--test-min-mask-ratio", type=float, default=DEFAULTS["test_min_mask_ratio"],
@@ -1638,6 +1883,13 @@ def parse_args():
     # Channel selection for naming (mirrors build_class_dataset.py)
     p.add_argument("--channel", type=str, default="pseudocolored", choices=['ecm', 'pseudocolored'],
                    help="Channel identifier for build naming: 'ecm' or 'pseudocolored' (default: pseudocolored)")
+    
+    # Ambiguous tile handling (mirrors build_class_dataset.py)
+    p.add_argument("--include-ambiguous", dest="include_ambiguous", action="store_true",
+                   default=DEFAULTS["include_ambiguous"],
+                   help="Include ambiguous tiles (0 < coverage < min_mask_ratio) as negatives in test set. "
+                        "Default: False (excludes ambiguous to prevent label noise). "
+                        "Training always excludes ambiguous regardless of this flag.")
     
     return p.parse_args()
 
@@ -1714,11 +1966,42 @@ def main():
         if test_stems_to_exclude:
             print(f"[Discovery] Found {len(test_stems_to_exclude)} images in test/ to exclude from train/val")
 
-    # Collect training and test image bases separately
-    training_bases = collect_target_bases(args.target_mask, test_stems_to_exclude)
-    test_bases = collect_test_bases(args.target_mask) if getattr(args, 'include_test_set', True) else set()
+    # Collect training and test image bases separately with confidence filtering
+    min_conf_train = getattr(args, 'min_confidence_train', 1)
+    min_conf_test = getattr(args, 'test_min_confidence', 2)
+    
+    training_bases, training_skip_reasons = collect_target_bases(
+        args.target_mask, 
+        test_stems_to_exclude,
+        min_confidence=min_conf_train
+    )
+    
+    if getattr(args, 'include_test_set', True):
+        test_bases, test_skip_reasons = collect_test_bases(
+            args.target_mask,
+            min_confidence=min_conf_test
+        )
+    else:
+        test_bases, test_skip_reasons = set(), {}
+    
+    # Track filtering statistics
+    stats = {
+        "training_slides_total": len(training_bases) + len(training_skip_reasons),
+        "training_slides_valid": len(training_bases),
+        "training_slides_skipped": len(training_skip_reasons),
+        "test_slides_total": len(test_bases) + len(test_skip_reasons),
+        "test_slides_valid": len(test_bases),
+        "test_slides_skipped": len(test_skip_reasons),
+        "training_skip_reasons": training_skip_reasons,
+        "test_skip_reasons": test_skip_reasons,
+        "min_confidence_train": min_conf_train,
+        "min_confidence_test": min_conf_test
+    }
     
     if not training_bases and not test_bases:
+        print("[ERROR] No valid training or test images found after confidence filtering.")
+        print(f"  Training: {stats['training_slides_skipped']} skipped")
+        print(f"  Test: {stats['test_slides_skipped']} skipped")
         raise SystemExit("No training or test images found. Nothing to do.")
     
     # Validate no overlap between training and test sets
@@ -1770,6 +2053,20 @@ def main():
     print(f"   ✓ Test preprocessing identical to training")
     print(f"   ✓ Test images completely separate from training")
     print(f"   ✓ No data leakage between sets")
+    
+    print(f"\n📊 Confidence Filtering Statistics:")
+    print(f"   Training slides: {stats['training_slides_valid']}/{stats['training_slides_total']} valid (min_confidence={stats['min_confidence_train']})")
+    if stats['training_slides_skipped'] > 0:
+        print(f"     Skipped: {stats['training_slides_skipped']} slides")
+        conf_skipped = sum(1 for r in stats['training_skip_reasons'].values() if 'conf' in r)
+        if conf_skipped > 0:
+            print(f"       - {conf_skipped} insufficient confidence")
+    print(f"   Test slides: {stats['test_slides_valid']}/{stats['test_slides_total']} valid (min_confidence={stats['min_confidence_test']})")
+    if stats['test_slides_skipped'] > 0:
+        print(f"     Skipped: {stats['test_slides_skipped']} slides")
+        conf_skipped = sum(1 for r in stats['test_skip_reasons'].values() if 'conf' in r)
+        if conf_skipped > 0:
+            print(f"       - {conf_skipped} insufficient confidence")
 
     # Create final build log with processing results
     processing_results = {
@@ -1789,7 +2086,16 @@ def main():
             "test_set_isolated": True,
             "preprocessing_identical": True
         },
-        "confidence_threshold_used": getattr(args, 'min_confidence', 2),
+        "confidence_filtering": {
+            "min_confidence_train": stats['min_confidence_train'],
+            "min_confidence_test": stats['min_confidence_test'],
+            "training_slides_total": stats['training_slides_total'],
+            "training_slides_valid": stats['training_slides_valid'],
+            "training_slides_skipped": stats['training_slides_skipped'],
+            "test_slides_total": stats['test_slides_total'],
+            "test_slides_valid": stats['test_slides_valid'],
+            "test_slides_skipped": stats['test_slides_skipped']
+        },
         "minimum_mask_ratio": args.min_mask_ratio,
         "negative_tile_percentage_requested": args.neg_pct,
         "jpeg_compression_quality": args.jpeg_quality,

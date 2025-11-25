@@ -355,6 +355,9 @@ def evaluate_predictions(labels: np.ndarray, probs: np.ndarray) -> Dict:
         "best_f1": summarize(f"{best_thresh:.2f}", best_preds),
         "per_threshold": per_thresh,
     }
+    
+    # Store best threshold for later use in plotting
+    metrics_dict["best_threshold"] = float(best_thresh)
 
     return metrics_dict
 
@@ -491,10 +494,7 @@ def plot_visualizations(labels: np.ndarray, probs: np.ndarray, roc_auc: float, p
     plt.savefig(output_dir / 'prob_histograms.png', dpi=150, bbox_inches='tight')
     plt.close()
     
-    # Confusion Matrix (at default threshold of 0.5)
-    plot_confusion_matrix(labels, probs, threshold=0.5, output_dir=output_dir)
-    
-    print(f"[Plots] Saved 5 visualization plots to {output_dir}")
+    print(f"[Plots] Saved 4 visualization plots to {output_dir}")
 
 
 def aggregate_by_slide(files: List[str], probs: np.ndarray, slide_map_csv: str | None) -> Dict | None:
@@ -765,10 +765,14 @@ def main():
     # Compute per-class statistics
     class_stats = compute_class_statistics(labels, probs)
     metrics_dict["class_statistics"] = class_stats
+    
+    # Extract best threshold for plotting
+    best_threshold = metrics_dict.get("best_threshold", 0.5)
 
     print("\n[Metrics]")
     print(f"ROC AUC: {metrics_dict['roc_auc']:.4f}")
     print(f"PR  AUC: {metrics_dict['pr_auc']:.4f}")
+    print(f"Best F1 Threshold: {best_threshold:.2f}")
     for name, summary in metrics_dict["threshold_metrics"].items():
         if name == "per_threshold":
             continue
@@ -789,9 +793,10 @@ def main():
     output_dir = Path(args.output_dir)
     dump_outputs(output_dir, files, labels, probs, metrics_dict, slide_summary=slide_summary)
     
-    # Generate visualization plots if requested
+    # Generate visualization plots if requested (including confusion matrix at best threshold)
     if args.save_plots:
         plot_visualizations(labels, probs, metrics_dict['roc_auc'], metrics_dict['pr_auc'], output_dir)
+        plot_confusion_matrix(labels, probs, threshold=best_threshold, output_dir=output_dir)
     
     # Save example images if requested
     if args.save_examples:

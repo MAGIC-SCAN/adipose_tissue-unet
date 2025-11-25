@@ -82,6 +82,8 @@ def parse_args() -> argparse.Namespace:
                         help="Lower percentile for percentile normalization (default: 1.0).")
     parser.add_argument("--percentile-high", type=float, default=99.0,
                         help="Upper percentile for percentile normalization (default: 99.0).")
+    parser.add_argument("--suffix", type=str, default="",
+                        help="Optional suffix to add to checkpoint directory name (e.g., '_v2', '_experiment1').")
     return parser.parse_args()
 
 
@@ -273,18 +275,37 @@ def build_model(dropout_rate: float) -> Tuple[Model, Model]:
 
 
 def load_transfer_weights(model: Model, weights_path: str | None):
+    """
+    Load transfer learning weights on top of ImageNet initialization.
+    
+    The model is first initialized with ImageNet weights (in build_model),
+    then this function optionally loads task-specific weights (e.g., adipocyte detector)
+    on top, using by_name matching to transfer compatible layers.
+    
+    Args:
+        model: Model with ImageNet-initialized backbone
+        weights_path: Path to additional pretrained weights (optional)
+    """
     if not weights_path:
+        print("[Init] No pretrained weights specified; using ImageNet initialization only.")
         return
+    
     weight_path = Path(weights_path)
     if not weight_path.exists():
-        print(f"[WARN] Pretrained weights not found at {weights_path}; using ImageNet initialization.")
+        print(f"[Init] WARNING: Pretrained weights not found at {weights_path}")
+        print(f"[Init] Using ImageNet initialization only (no additional transfer weights).")
         return
+    
     try:
-        print(f"[Init] Loading weights (by_name, skip mismatches) from {weights_path}")
+        print(f"[Init] Loading additional pretrained weights from: {weights_path}")
+        print(f"[Init] Strategy: by_name matching (loads compatible layers on top of ImageNet weights)")
         model.load_weights(str(weight_path), by_name=True, skip_mismatch=True)
-        print("[Init] Weight loading completed.")
+        print(f"[Init] ✓ Successfully loaded pretrained weights")
+        print(f"[Init] Model initialized with: ImageNet backbone + task-specific weights from {weight_path.name}")
     except Exception as exc:
-        print(f"[WARN] Failed to load weights from {weights_path}: {exc}")
+        print(f"[Init] ERROR: Failed to load weights from {weights_path}")
+        print(f"[Init] Error details: {exc}")
+        print(f"[Init] Falling back to ImageNet initialization only")
 
 
 def freeze_backbone(base_model: Model):
@@ -348,10 +369,11 @@ def main():
     train_dir = dataset_root / args.train_split
     val_dir = dataset_root / args.val_split
 
-    # Extract timestamp from dataset build folder name
-    # Pattern: _build_class[_ecm]_YYYYMMDD_HHMMSS
+    # Extract timestamp and channel from dataset build folder name
+    # Pattern: _build_class[_ecm][_MS]_YYYYMMDD_HHMMSS
     timestamp = None
-    build_folder = dataset_root.parent.name  # e.g., "_build_class_ecm_20251111_130505"
+    channel_suffix = ""
+    build_folder = dataset_root.parent.name  # e.g., "_build_class_ecm_MS_20251111_130505"
     import re
     match = re.search(r'_(\d{8}_\d{6})$', build_folder)
     if match:
@@ -360,6 +382,16 @@ def main():
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         print(f"[Config] Could not extract timestamp from '{build_folder}', using current: {timestamp}")
+    
+    # Check if build folder contains 'ecm' to add channel suffix
+    if '_ecm_' in build_folder.lower():
+        channel_suffix = "_ecm"
+        print(f"[Config] Detected ECM channel in build folder, adding channel suffix")
+        
+        # Check if build folder also contains 'MS' to add MS suffix
+        if '_MS_' in build_folder or 'MS_' in build_folder:
+            channel_suffix = "_ecm_MS"
+            print(f"[Config] Detected MS in build folder, adding MS suffix")
 
     train_files, train_labels = list_split_files(train_dir)
     val_files, val_labels = list_split_files(val_dir)
@@ -391,9 +423,10 @@ def main():
     model, base = build_model(dropout_rate=args.dropout)
     load_transfer_weights(model, args.pretrained_weights)
 
-    # Add suffix for percentile normalization in checkpoint name
-    norm_suffix = "_percentile" if args.percentile_norm else "_no_percentile"
-    run_dir = Path(args.checkpoint_dir) / f"classifier_{timestamp}{norm_suffix}"
+    # Build checkpoint directory name: timestamp_classifier[_ecm]_adipose_sybreosin[_percentile][suffix]
+    norm_suffix = "_percentile" if args.percentile_norm else ""
+    user_suffix = args.suffix if args.suffix else ""
+    run_dir = Path(args.checkpoint_dir) / f"{timestamp}_classifier{channel_suffix}_adipose_sybreosin{norm_suffix}{user_suffix}"
     run_dir.mkdir(parents=True, exist_ok=True)
     with open(run_dir / "config.json", "w") as f:
         json.dump(vars(args), f, indent=2)

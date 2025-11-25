@@ -1,0 +1,56 @@
+name: adipose-tf2
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Core Python
+  - python=3.10
+  - pip
+  
+  # Scientific Computing
+  - numpy=1.23.5
+  - scipy=1.10.1
+  - pandas=2.0.3
+  
+  # Image Processing
+  - opencv=4.8.0
+  - scikit-image=0.21.0
+  - pillow=10.0.0
+  - tifffile=2023.7.10
+  
+  # Visualization
+  - matplotlib=3.7.2
+  - seaborn=0.12.2
+  
+  # Data I/O
+  - h5py=3.9.0
+  
+  # JSON/Label Processing
+  - labelme
+  
+  # Utilities
+  - tqdm
+  - psutil
+  
+  # Development Tools (optional but recommended)
+  - jupyter
+  - jupyterlab
+  - ipython
+  
+  # Install via pip for precise version control
+  - pip:
+      # Deep Learning Framework (TF2.13 requires specific compatibility)
+      - tensorflow==2.13.1
+      - keras==2.13.1
+      
+      # ONNX Support (optional for model export/inference)
+      - onnx==1.14.1
+      - onnxruntime==1.16.0
+      - tf2onnx==1.15.1
+      
+      # Additional utilities
+      - scikit-learn==1.3.0
+      - gdown==4.7.1
+      
+      # Protobuf compatibility fix for TF2.13
+      - protobuf==3.20.3

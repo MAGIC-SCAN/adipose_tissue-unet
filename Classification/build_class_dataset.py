@@ -154,7 +154,9 @@ def setup_paths(args: argparse.Namespace) -> Tuple[Path, Path, Path]:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     # Only add "_ecm" suffix when using ECM channel
     channel_suffix = "_ecm" if args.channel == 'ecm' else ""
-    BUILD_ROOT = DATA_ROOT / f"_build_class{channel_suffix}_{timestamp}"
+    # Add "_MS" suffix if MS is in the data root path
+    ms_suffix = "_MS" if "MS" in str(DATA_ROOT) else ""
+    BUILD_ROOT = DATA_ROOT / f"_build_class{channel_suffix}{ms_suffix}_{timestamp}"
     BUILD_ROOT.mkdir(parents=True, exist_ok=False)
 
     dataset_dir = BUILD_ROOT / "dataset"
