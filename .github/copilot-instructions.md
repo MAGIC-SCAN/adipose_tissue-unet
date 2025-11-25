@@ -12,6 +12,8 @@ Dual-model pipeline for **adipose tissue analysis** in fluorescent histology ima
 
 **Data Transition:** Models trained on SYBR Gold + Eosin pseudocolored data (`/home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane`). Future retraining planned for ECM channel data (`/home/luci/adipose_tissue-unet/data/Meat_MS_Tulane/ECM_channel/`).
 
+**Note on Directory Names:** The directory `pre-post-processing_tools/` is referred to as the "tools folder" in conversation and documentation.
+
 ## Data Organization
 
 ### Current Training Data: `data/Meat_Luci_Tulane/`
@@ -384,55 +386,86 @@ python tools/export_weights_to_onnx.py \
 
 ## Utility Modules (`src/utils/`)
 
-### Core Utilities
+### Utility Modules (`src/utils/`)
+
 | Module | Purpose | Key Functions |
 |--------|---------|---------------|
 | `seed_utils.py` | Centralized randomization | `get_project_seed()` - always use this |
 | `stain_normalization.py` | Reinhard LAB normalization | `ReinhardStainNormalizer`, `complete_preprocessing_pipeline()` |
+| `stain_reference_metadata.json` | Reference image statistics | LAB color space stats for SYBR Gold + Eosin |
 | `data.py` | Augmentation pipeline | `augment_pair_{light,moderate,heavy}()`, `normalize_image()` |
 | `model.py` | Loss functions & metrics | `dice_coef()`, `jaccard_coef()`, `weighted_bce_dice_loss()` |
 | `runtime.py` | TF2 GPU setup | `gpu_selection(memory_growth=True)` |
-| `clr_callback.py` | Cyclic learning rate | `CyclicLR` callback |
+| `clr_callback.py` | Cyclic learning rate | `CyclicLR` callback (used in legacy code) |
+| `multi_gpu.py` | Multi-GPU training | Model parallelization utilities |
+| `isbi_utils.py` | ISBI challenge utils | Legacy utilities (not actively used) |
 
-### Stain Normalization Reference
-`stain_reference_metadata.json` contains LAB color statistics for SYBR Gold + Eosin reference image used in Reinhard normalization.
+## Project Structure (Reorganized)
+
+```
+adipose_tissue-unet/
+├── Segmentation/              # U-Net segmentation pipeline
+│   ├── build_dataset.py       # Parallel dataset builder with stain normalization
+│   ├── build_dataset_v2.py    # Alternative dataset builder
+│   ├── build_test_dataset.py  # Test set builder
+│   ├── train_adipose_unet_2.py    # Two-phase U-Net training (TF2.13)
+│   ├── train_adipose_unet_3.py    # Alternative training script
+│   ├── full_evaluation_enhanced.py # Evaluation with TTA, sliding window
+│   ├── evaluate_all_checkpoints.py # Batch checkpoint comparison
+│   ├── segmentation_inference.py   # Inference script
+│   ├── reconstruct_full_images.py  # Tile reassembly
+│   ├── tile_classification_evaluation.py
+│   ├── visualize_checkpoint_metrics.py
+│   └── run_complete_pipeline.sh    # End-to-end automation
+├── Classification/            # InceptionV3 tile classifier pipeline
+│   ├── build_class_dataset.py      # Binary dataset builder
+│   ├── build_test_class_dataset.py # Test set builder
+│   ├── train_adipose_classifier_v0.py # Transfer learning
+│   └── eval_adipose_classifier.py     # Evaluation with ROC/PR curves
+├── tools/                     # Preprocessing and utilities
+│   ├── preprocess_small_MS_SIMs.py    # ECM channel preprocessing (FFT, normalization)
+│   ├── large_wsi_to_small_wsi_Lucy.py # WSI splitter for Lucy data
+│   ├── large_wsi_to_small_wsi_MS.py   # WSI splitter for MS data
+│   ├── generate_checkpoint_normalization_stats.py
+│   └── export_weights_to_onnx.py
+├── src/                       # Shared utilities
+│   └── utils/
+│       ├── seed_utils.py      # Centralized seeding
+│       ├── stain_normalization.py  # Reinhard LAB color normalization
+│       ├── stain_reference_metadata.json  # Reference image LAB statistics
+│       ├── data.py            # Augmentation pipeline
+│       ├── model.py           # Metrics/losses (dice, IoU, BCE+Dice)
+│       ├── runtime.py         # GPU setup
+│       ├── clr_callback.py    # Cyclic learning rate callback
+│       ├── multi_gpu.py       # Multi-GPU training utilities
+│       └── isbi_utils.py      # ISBI challenge utilities (legacy)
+├── data/                      # Dataset storage
+│   ├── Meat_Luci_Tulane/      # Current training data (pseudocolored)
+│   └── Meat_MS_Tulane/        # Future ECM channel data
+│       └── ECM_channel/
+│           ├── *.jpg          # Original JPEGs from WSI splitter
+│           ├── enhanced/      # Normalized versions (*_percentile.jpg, *_zscore.jpg)
+│           └── corrected/     # Preprocessed output
+├── checkpoints/               # Model weights
+├── .github/
+│   └── copilot-instructions.md # This file
+├── seed.csv                   # Global random seed (865)
+└── README.md
+```
 
 ## Key Files Reference
 
-| File | Purpose |
-|------|---------|
-| `build_dataset.py` | Parallel U-Net dataset builder with stain normalization |
-| `Classification/build_class_dataset.py` | Classification dataset builder (balanced binary) |
-| `train_adipose_unet_2.py` | Two-phase U-Net training (TF2.13) |
-| `Classification/train_adipose_classifier_v0.py` | InceptionV3 transfer learning |
-| `full_evaluation_enhanced.py` | U-Net evaluation with TTA, sliding window |
-| `Classification/eval_adipose_classifier.py` | Classifier evaluation with ROC/PR curves |
-| `run_complete_pipeline.sh` | End-to-end U-Net automation |
-| `tools/large_wsi_to_small_wsi_2.py` | WSI tile splitter with enhancement |
-| `tools/generate_checkpoint_normalization_stats.py` | Backfill normalization stats |
-
-## Quick Reference Commands
-
-```bash
-# Build dataset with stain normalization
-python build_dataset.py \
-  --data-root /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane \
-  --stain-normalize --target-mask fat --subtract
-
-# Train model (auto-detects latest build)
-python train_adipose_unet_2.py \
-  --data-root /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane \
-  --epochs-phase2 100
-
-# Evaluate with TTA
-python full_evaluation_enhanced.py \
-  --weights checkpoints/latest/*.weights.h5 \
-  --data-root /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane/_test/stain_normalized \
-  --clean-test --stain --use-tta --tta-mode full
-
-# Split large WSI for annotation
-python tools/large_wsi_to_small_wsi_2.py \
-  --input-dir data/Meat_MS_Tulane/ECM_channel/raw \
-  --output-dir data/Meat_MS_Tulane/ECM_channel/tiles \
-  --save-enhanced --enhancement-method clahe
-```
+| File | Purpose | Location |
+|------|---------|----------|
+| `build_dataset.py` | Parallel U-Net dataset builder with stain normalization | `Segmentation/` |
+| `build_class_dataset.py` | Classification dataset builder (balanced binary) | `Classification/` |
+| `train_adipose_unet_2.py` | Two-phase U-Net training (TF2.13) | `Segmentation/` |
+| `train_adipose_classifier_v0.py` | InceptionV3 transfer learning | `Classification/` |
+| `full_evaluation_enhanced.py` | U-Net evaluation with TTA, sliding window | `Segmentation/` |
+| `eval_adipose_classifier.py` | Classifier evaluation with ROC/PR curves | `Classification/` |
+| `run_complete_pipeline.sh` | End-to-end U-Net automation | `Segmentation/` |
+| `preprocess_small_MS_SIMs.py` | ECM channel preprocessing (FFT, normalization) | `tools/` |
+| `large_wsi_to_small_wsi_Lucy.py` | WSI splitter for Lucy data | `tools/` |
+| `large_wsi_to_small_wsi_MS.py` | WSI splitter for MS data | `tools/` |
+| `generate_checkpoint_normalization_stats.py` | Backfill normalization stats | `tools/` |
+| `export_weights_to_onnx.py` | Convert weights to ONNX format | `tools/` |

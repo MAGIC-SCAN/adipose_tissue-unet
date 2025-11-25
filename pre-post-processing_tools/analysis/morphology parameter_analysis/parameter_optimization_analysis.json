@@ -1,0 +1,133 @@
+{
+  "dataset_info": {
+    "total_training_images": 673,
+    "analysis_date": "2025-10-30T18:58:14",
+    "image_resolution": "1024x1024"
+  },
+  "cell_statistics": {
+    "total_cells_analyzed": 5,
+    "area_stats": {
+      "min": 6162.0,
+      "max": 868117.0,
+      "mean": 263391.8,
+      "median": 201045.0,
+      "std": 314896.7203953702,
+      "percentile_5": 9396.4,
+      "percentile_95": 738353.7999999999
+    },
+    "circularity_stats": {
+      "min": 0.22220847890525108,
+      "max": 0.8434527905405655,
+      "mean": 0.5535971296280028,
+      "median": 0.5461709875634267
+    },
+    "aspect_ratio_stats": {
+      "min": 1.209122203005363,
+      "max": 3.3613401693086966,
+      "mean": 2.215935611623716,
+      "median": 2.478253294607924
+    },
+    "sample_results": {
+      "12.12 Beef Shoulder 2_grid_5x5_r0_c5_r0_c0.jpg": {
+        "num_cells": 3,
+        "areas": [
+          201045.0,
+          6162.0,
+          22334.0
+        ],
+        "circularities": [
+          0.22220847890525108,
+          0.8434527905405655,
+          0.5461709875634267
+        ],
+        "aspect_ratios": [
+          3.3613401693086966,
+          1.3454867768015464,
+          2.685475614395049
+        ],
+        "tissue_coverage": 0.21890735626220703
+      },
+      "5th meat, 400g, placeholder and black plate_grid_5x5_r3_c0_r2_c4.jpg": {
+        "num_cells": 0,
+        "areas": [],
+        "circularities": [],
+        "aspect_ratios": [],
+        "tissue_coverage": 0.0
+      },
+      "6 BEEF Shoulder -1_grid_5x5_r3_c0_r6_c5.jpg": {
+        "num_cells": 0,
+        "areas": [],
+        "circularities": [],
+        "aspect_ratios": [],
+        "tissue_coverage": 0.0
+      },
+      "6 BEEF Shoulder -1_grid_5x5_r4_c2_r7_c9.jpg": {
+        "num_cells": 0,
+        "areas": [],
+        "circularities": [],
+        "aspect_ratios": [],
+        "tissue_coverage": 0.0
+      },
+      "6 BEEF Shoulder -1_grid_5x5_r6_c1_r6_c7.jpg": {
+        "num_cells": 1,
+        "areas": [
+          868117.0
+        ],
+        "circularities": [
+          0.7278940828958168
+        ],
+        "aspect_ratios": [
+          1.209122203005363
+        ],
+        "tissue_coverage": 0.8279008865356445
+      },
+      "B-2_r8_c6.jpg": {
+        "num_cells": 0,
+        "areas": [],
+        "circularities": [],
+        "aspect_ratios": [],
+        "tissue_coverage": 0.0
+      },
+      "Meat_Lauren_r9_c4.jpg": {
+        "num_cells": 0,
+        "areas": [],
+        "circularities": [],
+        "aspect_ratios": [],
+        "tissue_coverage": 0.0
+      },
+      "meattest-36_r3_c3.jpg": {
+        "num_cells": 1,
+        "areas": [
+          219301.0
+        ],
+        "circularities": [
+          0.42825930823495373
+        ],
+        "aspect_ratios": [
+          2.478253294607924
+        ],
+        "tissue_coverage": 0.20914173126220703
+      }
+    }
+  },
+  "optimized_parameters": {
+    "morphological": {
+      "min_cell_size": 4698,
+      "max_cell_size": 20000,
+      "min_circularity": 0.15359712962800276,
+      "max_aspect_ratio": 4.215935611623716,
+      "morph_kernel_size": 3
+    },
+    "crf": {
+      "bilateral_sxy": 25,
+      "bilateral_srgb": 15,
+      "gaussian_sxy": 4,
+      "iterations": 10
+    }
+  },
+  "recommendations": {
+    "augmentation_strategy": "moderate",
+    "reasoning": "Dataset size (673 tiles) falls in medium range - balanced augmentation recommended",
+    "post_processing": "Both morphological and CRF recommended for meat tissue"
+  }
+}

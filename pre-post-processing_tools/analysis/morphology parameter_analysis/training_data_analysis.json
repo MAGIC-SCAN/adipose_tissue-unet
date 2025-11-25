@@ -1,0 +1,169 @@
+{
+  "dataset_info": {
+    "total_training_images": 673,
+    "analysis_date": "2025-10-30T22:03:43",
+    "image_resolution": "1024x1024"
+  },
+  "cell_statistics": {
+    "total_cells_analyzed": 9,
+    "area_stats": {
+      "min": 6162.0,
+      "max": 999099.0,
+      "mean": 329248.0,
+      "median": 194028.0,
+      "std": 344543.8629060489,
+      "percentile_5": 7726.4,
+      "percentile_95": 877143.7999999999
+    },
+    "circularity_stats": {
+      "min": 0.07632118410375908,
+      "max": 0.8434527905405655,
+      "mean": 0.47841031494026726,
+      "median": 0.5404662370507828
+    },
+    "aspect_ratio_stats": {
+      "min": 1.027281588255651,
+      "max": 3.3613401693086966,
+      "mean": 1.9586324288417138,
+      "median": 1.5080271852969092
+    },
+    "sample_results": {
+      "12.12 Beef Shoulder 2_grid_5x5_r0_c5_r0_c0.jpg": {
+        "num_cells": 3,
+        "areas": [
+          201045.0,
+          6162.0,
+          22334.0
+        ],
+        "circularities": [
+          0.22220847890525108,
+          0.8434527905405655,
+          0.5461709875634267
+        ],
+        "aspect_ratios": [
+          3.3613401693086966,
+          1.3454867768015464,
+          2.685475614395049
+        ],
+        "tissue_coverage": 0.21890735626220703
+      },
+      "4th Meat, 400 g, 3 wts_grid_5x5_r0_c2_r8_c1.jpg": {
+        "num_cells": 0,
+        "areas": [],
+        "circularities": [],
+        "aspect_ratios": [],
+        "tissue_coverage": 0.0
+      },
+      "6 BEEF Shoulder -1_grid_5x5_r1_c4_r5_c0.jpg": {
+        "num_cells": 1,
+        "areas": [
+          694211.0
+        ],
+        "circularities": [
+          0.7033053406282805
+        ],
+        "aspect_ratios": [
+          1.5080271852969092
+        ],
+        "tissue_coverage": 0.6620512008666992
+      },
+      "6 BEEF Shoulder -1_grid_5x5_r3_c1_r7_c6.jpg": {
+        "num_cells": 0,
+        "areas": [],
+        "circularities": [],
+        "aspect_ratios": [],
+        "tissue_coverage": 0.0
+      },
+      "6 BEEF Shoulder -1_grid_5x5_r5_c0_r9_c5.jpg": {
+        "num_cells": 0,
+        "areas": [],
+        "circularities": [],
+        "aspect_ratios": [],
+        "tissue_coverage": 0.0
+      },
+      "6 BEEF Shoulder -1_grid_5x5_r6_c1_r6_c5.jpg": {
+        "num_cells": 1,
+        "areas": [
+          194028.0
+        ],
+        "circularities": [
+          0.3299613262724773
+        ],
+        "aspect_ratios": [
+          1.403368685806295
+        ],
+        "tissue_coverage": 0.18503952026367188
+      },
+      "6 BEEF Shoulder -1_grid_5x5_r6_c3_r6_c2.jpg": {
+        "num_cells": 1,
+        "areas": [
+          678446.0
+        ],
+        "circularities": [
+          0.5404662370507828
+        ],
+        "aspect_ratios": [
+          1.478587816764001
+        ],
+        "tissue_coverage": 0.6470165252685547
+      },
+      "Meat_5_17_r8_c6.jpg": {
+        "num_cells": 2,
+        "areas": [
+          10073.0,
+          157834.0
+        ],
+        "circularities": [
+          0.2646380547038015,
+          0.07632118410375908
+        ],
+        "aspect_ratios": [
+          1.8154019068216716,
+          3.0027221161256077
+        ],
+        "tissue_coverage": 0.16012859344482422
+      },
+      "meattest-31_r0_c0.jpg": {
+        "num_cells": 1,
+        "areas": [
+          999099.0
+        ],
+        "circularities": [
+          0.779168434694061
+        ],
+        "aspect_ratios": [
+          1.027281588255651
+        ],
+        "tissue_coverage": 0.952815055847168
+      },
+      "meattest-36_r6_c0.jpg": {
+        "num_cells": 0,
+        "areas": [],
+        "circularities": [],
+        "aspect_ratios": [],
+        "tissue_coverage": 0.0
+      }
+    }
+  },
+  "optimized_parameters": {
+    "morphological": {
+      "min_cell_size": 3863,
+      "max_cell_size": 50000,
+      "min_circularity": 0.1,
+      "max_aspect_ratio": 3.458632428841714,
+      "morph_kernel_size": 3
+    },
+    "crf": {
+      "bilateral_sxy": 25,
+      "bilateral_srgb": 15,
+      "gaussian_sxy": 4,
+      "iterations": 10
+    }
+  },
+  "recommendations": {
+    "augmentation_strategy": "moderate",
+    "reasoning": "Dataset size (673 tiles) falls in medium range - balanced augmentation recommended",
+    "post_processing": "Both morphological and CRF recommended for meat tissue",
+    "expected_improvement": "+3-6% Dice score improvement with both methods"
+  }
+}

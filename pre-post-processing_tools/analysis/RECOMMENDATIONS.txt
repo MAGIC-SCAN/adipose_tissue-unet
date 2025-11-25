@@ -1,0 +1,44 @@
+================================================================================
+PREPROCESSING RECOMMENDATIONS FOR ADIPOSE TISSUE U-NET
+================================================================================
+
+Dataset Statistics:
+  - Global mean: 200.99
+  - Global std: 25.26
+  - Stain CV: 12.53%
+
+1. [MEDIUM] Stain Normalization
+   Issue: Moderate staining variability (CV: 12.53%)
+   Recommendation: Consider per-image adaptive normalization or CLAHE
+
+2. [HIGH] Normalization
+   Issue: Current z-score normalization may not handle intensity variations optimally
+   Recommendation: Test CLAHE + percentile normalization for better contrast and robustness
+
+3. [MEDIUM] Augmentation
+   Issue: Dataset size: 673 training tiles
+   Recommendation: Current moderate augmentation is appropriate. Consider heavy augmentation if overfitting occurs
+
+4. [LOW] Class Balance
+   Issue: 40% negative tiles - good balance
+   Recommendation: Current negative sampling ratio is good. Monitor for class imbalance during training
+
+
+================================================================================
+IMPLEMENTATION SUGGESTIONS
+================================================================================
+
+1. Immediate Improvements (Easy to implement):
+   - Test CLAHE preprocessing before normalization
+   - Try percentile normalization instead of z-score
+   - Add test-time augmentation for inference
+
+2. Medium-term Improvements:
+   - Implement stain normalization if CV > 15%
+   - Add morphological post-processing to predictions
+   - Experiment with different loss function weights
+
+3. Advanced Techniques:
+   - Multi-scale input pyramids
+   - Attention mechanisms for boundary refinement
+   - Ensemble predictions from multiple checkpoints

@@ -11,10 +11,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
+
+# Add project root to Python path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 import numpy as np
 import tensorflow as tf
@@ -43,7 +48,7 @@ def parse_args() -> argparse.Namespace:
                         help="Subdirectory name for training split (default: train).")
     parser.add_argument("--val-split", type=str, default="val",
                         help="Subdirectory name for validation split (default: val).")
-    parser.add_argument("--checkpoint-dir", type=str, default="checkpoints/classifier_runs",
+    parser.add_argument("--checkpoint-dir", type=str, default="checkpoints/classification",
                         help="Directory to store training artifacts.")
     parser.add_argument("--pretrained-weights", type=str, default=DEFAULT_WEIGHTS,
                         help="Path to legacy weights (.h5 or SavedModel). Used with by_name loading.")
@@ -62,7 +67,8 @@ def parse_args() -> argparse.Namespace:
                         help="Name of Inception layer to start unfreezing during fine-tuning.")
     parser.add_argument("--patience", type=int, default=4,
                         help="Patience for EarlyStopping/ReduceLROnPlateau (monitors val_auc).")
-    parser.add_argument("--label-smoothing", type=float, default=0.1)
+    parser.add_argument("--label-smoothing", type=float, default=0.1,
+                        help="Label smoothing for loss (default: 0.1).")
     parser.add_argument("--use-class-weights", action="store_true", default=False,
                         help="Enable image-level class weighting (disabled by default for balanced datasets).")
     parser.add_argument("--pos-weight-multiplier", type=float, default=1.0,
@@ -70,6 +76,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-best-only", action="store_true", default=True)
     parser.add_argument("--no-save-best-only", dest="save_best_only", action="store_false",
                         help="Disable save_best_only on checkpoints.")
+    parser.add_argument("--percentile-norm", type=lambda x: str(x).lower() == 'true', required=True,
+                        help="Apply percentile normalization to enhance contrast. Required: true or false.")
+    parser.add_argument("--percentile-low", type=float, default=1.0,
+                        help="Lower percentile for percentile normalization (default: 1.0).")
+    parser.add_argument("--percentile-high", type=float, default=99.0,
+                        help="Upper percentile for percentile normalization (default: 99.0).")
     return parser.parse_args()
 
 
@@ -174,33 +186,77 @@ def compute_image_level_class_weights(file_paths: List[str],
     return weights
 
 
+def _percentile_normalize(img: np.ndarray, p_low: float, p_high: float) -> np.ndarray:
+    """Apply percentile normalization to enhance contrast."""
+    img = np.asarray(img, dtype=np.float32)
+    plow, phigh = np.percentile(img, (p_low, p_high))
+    scale = max(phigh - plow, 1e-3)
+    # Normalize to [0, 1] then scale to [0, 255] for InceptionV3 preprocessing
+    normalized = np.clip((img - plow) / scale, 0, 1)
+    return (normalized * 255.0).astype(np.float32)
+
+
 def _numpy_augment(img: np.ndarray) -> np.ndarray:
     img = np.asarray(img, dtype=np.float32)
     return augment_grayscale_tile_classification(img)
 
 
-def _preprocess(path: tf.Tensor, label: tf.Tensor, training: bool) -> Tuple[tf.Tensor, tf.Tensor]:
-    image = tf.io.read_file(path)
-    image = tf.io.decode_jpeg(image, channels=3)
-    image = tf.image.rgb_to_grayscale(image)
-    image = tf.cast(image, tf.float32)
-    if training:
-        image = tf.squeeze(image, axis=-1)
-        image = tf.numpy_function(_numpy_augment, [image], tf.float32)
-        image.set_shape([None, None])
-        image = tf.expand_dims(image, axis=-1)
+def _preprocess(path: tf.Tensor, label: tf.Tensor, training: bool, percentile_norm: bool, p_low: float, p_high: float) -> Tuple[tf.Tensor, tf.Tensor]:
+    
+    def _load_and_process_all(path_bytes, training, percentile_norm, p_low, p_high):
+        """Single Python function to handle all preprocessing to avoid nested py_function calls."""
+        import cv2
+        
+        # Read JPEG image
+        path_str = path_bytes.numpy().decode('utf-8')
+        img = cv2.imread(path_str, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            raise ValueError(f"Failed to load image: {path_str}")
+        img = img.astype(np.float32)
+        
+        # Apply percentile normalization before augmentation if enabled
+        if percentile_norm:
+            plow, phigh = np.percentile(img, (p_low, p_high))
+            scale = max(phigh - plow, 1e-3)
+            # Normalize to [0, 1] then scale to [0, 255] for InceptionV3 preprocessing
+            img = np.clip((img - plow) / scale, 0, 1)
+            img = (img * 255.0).astype(np.float32)
+        
+        # Apply augmentation if training
+        if training:
+            img = augment_grayscale_tile_classification(img)
+        
+        return img.astype(np.float32)
+    
+    # Single py_function call for all preprocessing
+    image = tf.py_function(
+        func=lambda p: _load_and_process_all(p, training, percentile_norm, p_low, p_high),
+        inp=[path],
+        Tout=tf.float32
+    )
+    image.set_shape([None, None])
+    
+    # Expand to add channel dimension
+    image = tf.expand_dims(image, axis=-1)
+    
+    # Resize to InceptionV3 input size
     image = tf.image.resize(image, [299, 299], method="bilinear")
+    
+    # Convert grayscale to RGB by tiling
     image = tf.tile(image, [1, 1, 3])
+    
+    # Apply InceptionV3 preprocessing
     image = preprocess_input(image)
     label = tf.cast(label, tf.float32)
     return image, label
 
 
-def make_dataset(files: List[str], labels: List[int], batch_size: int, training: bool) -> tf.data.Dataset:
+def make_dataset(files: List[str], labels: List[int], batch_size: int, training: bool, 
+                 percentile_norm: bool = True, p_low: float = 1.0, p_high: float = 99.0) -> tf.data.Dataset:
     ds = tf.data.Dataset.from_tensor_slices((files, labels))
     if training:
         ds = ds.shuffle(buffer_size=len(files), seed=GLOBAL_SEED, reshuffle_each_iteration=True)
-    ds = ds.map(lambda p, y: _preprocess(p, y, training),
+    ds = ds.map(lambda p, y: _preprocess(p, y, training, percentile_norm, p_low, p_high),
                 num_parallel_calls=tf.data.AUTOTUNE)
     ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
     return ds
@@ -292,10 +348,26 @@ def main():
     train_dir = dataset_root / args.train_split
     val_dir = dataset_root / args.val_split
 
+    # Extract timestamp from dataset build folder name
+    # Pattern: _build_class[_ecm]_YYYYMMDD_HHMMSS
+    timestamp = None
+    build_folder = dataset_root.parent.name  # e.g., "_build_class_ecm_20251111_130505"
+    import re
+    match = re.search(r'_(\d{8}_\d{6})$', build_folder)
+    if match:
+        timestamp = match.group(1)
+        print(f"[Config] Using dataset timestamp from build folder: {timestamp}")
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        print(f"[Config] Could not extract timestamp from '{build_folder}', using current: {timestamp}")
+
     train_files, train_labels = list_split_files(train_dir)
     val_files, val_labels = list_split_files(val_dir)
 
     print(f"[Data] Train samples: {len(train_files)} | Val samples: {len(val_files)}")
+    print(f"[Normalization] Percentile normalization: {'ENABLED' if args.percentile_norm else 'DISABLED'}")
+    if args.percentile_norm:
+        print(f"[Normalization]   Percentile range: {args.percentile_low}-{args.percentile_high}")
     
     # Compute image-level class weights if requested
     if args.use_class_weights:
@@ -309,14 +381,19 @@ def main():
         class_weights = None
         print(f"[Weighting] Class weights disabled (using balanced dataset)")
 
-    train_ds = make_dataset(train_files, train_labels, args.batch_size, training=True)
-    val_ds = make_dataset(val_files, val_labels, args.batch_size, training=False)
+    train_ds = make_dataset(train_files, train_labels, args.batch_size, training=True,
+                           percentile_norm=args.percentile_norm, 
+                           p_low=args.percentile_low, p_high=args.percentile_high)
+    val_ds = make_dataset(val_files, val_labels, args.batch_size, training=False,
+                         percentile_norm=args.percentile_norm,
+                         p_low=args.percentile_low, p_high=args.percentile_high)
 
     model, base = build_model(dropout_rate=args.dropout)
     load_transfer_weights(model, args.pretrained_weights)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = Path(args.checkpoint_dir) / f"classifier_{timestamp}"
+    # Add suffix for percentile normalization in checkpoint name
+    norm_suffix = "_percentile" if args.percentile_norm else "_no_percentile"
+    run_dir = Path(args.checkpoint_dir) / f"classifier_{timestamp}{norm_suffix}"
     run_dir.mkdir(parents=True, exist_ok=True)
     with open(run_dir / "config.json", "w") as f:
         json.dump(vars(args), f, indent=2)

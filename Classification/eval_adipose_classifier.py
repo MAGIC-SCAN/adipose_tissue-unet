@@ -17,6 +17,7 @@ from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 import tensorflow as tf
+import tifffile
 from sklearn import metrics
 from sklearn.calibration import calibration_curve
 from tensorflow.keras.applications.inception_v3 import preprocess_input
@@ -51,13 +52,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser("Evaluate adipose tile classifier")
     
     # Test dataset selection
-    parser.add_argument("--test-folder", type=str, default="clean_test_class",
-                        help="Test folder name (e.g., 'clean_test_class')")
-    parser.add_argument("--stain-normalized", action="store_true", default=False,
-                        help="Use stain-normalized test set (default: original)")
-    parser.add_argument("--test-base", type=str, 
-                        default="/home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane/_test",
-                        help="Base test directory")
+    parser.add_argument("--test-dir", type=str, required=True,
+                        help="Direct path to test dataset directory containing adipose/ and not_adipose/ folders")
     
     # Model weights
     parser.add_argument("--weights", type=str, required=True,
@@ -83,6 +79,20 @@ def parse_args() -> argparse.Namespace:
                         help="Generate visualization plots (ROC, PR, calibration, histograms, confusion matrix). Enabled by default.")
     parser.add_argument("--no-plots", dest="save_plots", action="store_false",
                         help="Disable plot generation")
+    parser.add_argument("--save-examples", action="store_true", default=True,
+                        help="Save example images for TP/TN/FP/FN categories with preprocessing applied. Enabled by default.")
+    parser.add_argument("--no-examples", dest="save_examples", action="store_false",
+                        help="Disable example image generation")
+    parser.add_argument("--num-examples", type=int, default=10,
+                        help="Number of example images to save per category (default: 10).")
+    parser.add_argument("--percentile-norm-examples", type=lambda x: str(x).lower() == 'true', default=True,
+                        help="Apply percentile normalization to example images for better visualization (default: true).")
+    parser.add_argument("--percentile-norm", type=lambda x: str(x).lower() == 'true', required=True,
+                        help="Apply percentile normalization to enhance contrast. Required: true or false.")
+    parser.add_argument("--percentile-low", type=float, default=1.0,
+                        help="Lower percentile for percentile normalization (default: 1.0).")
+    parser.add_argument("--percentile-high", type=float, default=99.0,
+                        help="Upper percentile for percentile normalization (default: 99.0).")
     return parser.parse_args()
 
 
@@ -95,15 +105,21 @@ def list_files(split_dir: Path) -> Tuple[List[str], np.ndarray]:
     files: List[str] = []
     labels: List[int] = []
 
-    for path in sorted(pos_dir.glob("*.jpg")):
-        files.append(str(path))
-        labels.append(1)
-    for path in sorted(neg_dir.glob("*.jpg")):
-        files.append(str(path))
-        labels.append(0)
+    # Support multiple image formats
+    extensions = ["*.jpg", "*.jpeg", "*.png", "*.tif", "*.tiff"]
+    
+    for ext in extensions:
+        for path in sorted(pos_dir.glob(ext)):
+            files.append(str(path))
+            labels.append(1)
+    
+    for ext in extensions:
+        for path in sorted(neg_dir.glob(ext)):
+            files.append(str(path))
+            labels.append(0)
 
     if not files:
-        raise RuntimeError(f"No tiles found under {split_dir}.")
+        raise RuntimeError(f"No image files found under {split_dir}.")
 
     return files, np.asarray(labels, dtype=np.int32)
 
@@ -126,33 +142,98 @@ def apply_tta_transform(image: np.ndarray, transform_id: int) -> np.ndarray:
     return image
 
 
-def preprocess_image(path: tf.Tensor, transform_id: int) -> tf.Tensor:
-    image = tf.io.read_file(path)
-    image = tf.io.decode_jpeg(image, channels=3)
-    image = tf.image.rgb_to_grayscale(image)
-    image = tf.cast(image, tf.float32)
+def percentile_normalize_numpy(img: np.ndarray, p_low: float, p_high: float) -> np.ndarray:
+    """Apply percentile normalization to enhance contrast."""
+    img = img.astype(np.float32)
+    plow, phigh = np.percentile(img, (p_low, p_high))
+    scale = max(phigh - plow, 1e-3)
+    # Normalize to [0, 1] then scale to [0, 255] for InceptionV3 preprocessing
+    normalized = np.clip((img - plow) / scale, 0, 1)
+    return (normalized * 255.0).astype(np.float32)
 
-    def _apply(x):
-        arr = x.numpy()
-        arr = apply_tta_transform(arr, transform_id)
-        return arr.astype(np.float32)
 
-    if transform_id != 0:
-        image = tf.squeeze(image, axis=-1)
-        image = tf.py_function(func=_apply, inp=[image], Tout=tf.float32)
-        image.set_shape([None, None])
-        image = tf.expand_dims(image, axis=-1)
-
+def preprocess_image(path: tf.Tensor, transform_id: int, percentile_norm: bool, p_low: float, p_high: float) -> tf.Tensor:
+    """Load and preprocess image with support for JPEG, PNG, and TIFF formats."""
+    
+    def _load_and_process_all(path_bytes, transform_id, percentile_norm, p_low, p_high):
+        """Single Python function to handle all preprocessing to avoid nested py_function calls."""
+        import cv2
+        from PIL import Image
+        
+        path_str = path_bytes.numpy().decode('utf-8')
+        file_ext = Path(path_str).suffix.lower()
+        
+        # Load image based on extension
+        if file_ext in ['.tif', '.tiff']:
+            # Use tifffile for TIFF files
+            try:
+                img = tifffile.imread(path_str)
+                # Normalize if 16-bit
+                if img.dtype == np.uint16:
+                    img = (img / 256).astype(np.uint8)
+            except Exception as e:
+                print(f"[WARN] tifffile failed for {path_str}, using PIL: {e}")
+                with Image.open(path_str) as pil_img:
+                    img = np.array(pil_img)
+        else:
+            # Use PIL for PNG, JPEG
+            with Image.open(path_str) as pil_img:
+                img = np.array(pil_img)
+        
+        # Convert to grayscale if needed
+        if img.ndim == 2:
+            # Already grayscale
+            pass
+        elif img.ndim == 3 and img.shape[2] == 3:
+            # RGB to grayscale
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        elif img.ndim == 3 and img.shape[2] == 4:
+            # RGBA to grayscale
+            img = cv2.cvtColor(img, cv2.COLOR_RGBA2GRAY)
+        
+        img = img.astype(np.float32)
+        
+        # Apply percentile normalization if enabled
+        if percentile_norm:
+            plow, phigh = np.percentile(img, (p_low, p_high))
+            scale = max(phigh - plow, 1e-3)
+            # Normalize to [0, 1] then scale to [0, 255] for InceptionV3 preprocessing
+            img = np.clip((img - plow) / scale, 0, 1)
+            img = (img * 255.0).astype(np.float32)
+        
+        # Apply TTA transform if needed
+        if transform_id != 0:
+            img = apply_tta_transform(img, transform_id)
+        
+        return img.astype(np.float32)
+    
+    # Single py_function call for all preprocessing
+    image = tf.py_function(
+        func=lambda p: _load_and_process_all(p, transform_id, percentile_norm, p_low, p_high),
+        inp=[path],
+        Tout=tf.float32
+    )
+    image.set_shape([None, None])
+    
+    # Expand to add channel dimension
+    image = tf.expand_dims(image, axis=-1)
+    
+    # Resize to InceptionV3 input size
     image = tf.image.resize(image, [299, 299], method="bilinear")
+    
+    # Convert grayscale to RGB by tiling
     image = tf.tile(image, [1, 1, 3])
+    
+    # Apply InceptionV3 preprocessing
     image = preprocess_input(image)
     return image
 
 
-def make_dataset(files: List[str], labels: np.ndarray, batch_size: int, transform_id: int) -> tf.data.Dataset:
+def make_dataset(files: List[str], labels: np.ndarray, batch_size: int, transform_id: int,
+                 percentile_norm: bool, p_low: float, p_high: float) -> tf.data.Dataset:
     ds = tf.data.Dataset.from_tensor_slices((files, labels))
     ds = ds.map(
-        lambda p, y: (preprocess_image(p, transform_id), tf.cast(y, tf.float32)),
+        lambda p, y: (preprocess_image(p, transform_id, percentile_norm, p_low, p_high), tf.cast(y, tf.float32)),
         num_parallel_calls=tf.data.AUTOTUNE,
     )
     ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
@@ -173,11 +254,13 @@ def load_weights(model: Model, weights_path: str):
     print(f"[Eval] Loaded weights from {weights_path}")
 
 
-def predict_with_tta(model: Model, files: List[str], labels: np.ndarray, batch_size: int, transform_ids: Sequence[int]) -> np.ndarray:
+def predict_with_tta(model: Model, files: List[str], labels: np.ndarray, batch_size: int, transform_ids: Sequence[int],
+                     percentile_norm: bool, p_low: float, p_high: float) -> np.ndarray:
     agg = np.zeros(len(files), dtype=np.float32)
     for idx, t_id in enumerate(transform_ids):
         print(f"[Eval] Running TTA pass {idx + 1}/{len(transform_ids)} (transform_id={t_id})")
-        ds = make_dataset(files, labels, batch_size, transform_id=t_id)
+        ds = make_dataset(files, labels, batch_size, transform_id=t_id,
+                         percentile_norm=percentile_norm, p_low=p_low, p_high=p_high)
         preds = model.predict(ds, verbose=1).squeeze()
         agg += preds
     agg /= len(transform_ids)
@@ -185,13 +268,15 @@ def predict_with_tta(model: Model, files: List[str], labels: np.ndarray, batch_s
 
 
 def average_snapshots(primary: np.ndarray, extra_models: List[Model], files: List[str], labels: np.ndarray,
-                      batch_size: int, transform_ids: Sequence[int]) -> np.ndarray:
+                      batch_size: int, transform_ids: Sequence[int],
+                      percentile_norm: bool, p_low: float, p_high: float) -> np.ndarray:
     if not extra_models:
         return primary
     logits = [np.log(primary / np.clip(1 - primary, 1e-7, 1))]
     for idx, m in enumerate(extra_models):
         print(f"[Eval] Snapshot ensemble member {idx + 1}")
-        probs = predict_with_tta(m, files, labels, batch_size, transform_ids)
+        probs = predict_with_tta(m, files, labels, batch_size, transform_ids,
+                               percentile_norm, p_low, p_high)
         logits.append(np.log(probs / np.clip(1 - probs, 1e-7, 1)))
     mean_logits = np.mean(logits, axis=0)
     return 1.0 / (1.0 + np.exp(-mean_logits))
@@ -440,25 +525,126 @@ def aggregate_by_slide(files: List[str], probs: np.ndarray, slide_map_csv: str |
     return slide_summary
 
 
-def resolve_test_path(args: argparse.Namespace) -> Path:
+def save_example_images(output_dir: Path, files: List[str], labels: np.ndarray, probs: np.ndarray, 
+                        threshold: float = 0.5, num_examples: int = 10,
+                        percentile_norm_examples: bool = True, inference_percentile_norm: bool = False,
+                        p_low: float = 1.0, p_high: float = 99.0):
     """
-    Construct test dataset path from simplified args
+    Save example images for each prediction category (TP/TN/FP/FN) with preprocessing applied.
     
     Args:
-        args: Parsed command line arguments
+        output_dir: Directory to save examples
+        files: List of image file paths
+        labels: True labels
+        probs: Predicted probabilities
+        threshold: Classification threshold (default: 0.5)
+        num_examples: Number of examples per category
+        percentile_norm_examples: Whether to apply percentile normalization to examples
+        inference_percentile_norm: Whether inference used percentile normalization
+        p_low: Lower percentile for normalization
+        p_high: Upper percentile for normalization
         
-    Returns:
-        Path to test dataset directory
+    Note: If percentile_norm_examples=True, examples will be normalized regardless of inference settings.
+          This allows visualization of normalized images even when model was trained/tested without normalization.
     """
-    test_base = Path(args.test_base)
+    import cv2
+    from PIL import Image
     
-    # Choose normalization subdirectory
-    norm_dir = "stain_normalized" if args.stain_normalized else "original"
+    examples_dir = output_dir / "examples"
+    examples_dir.mkdir(parents=True, exist_ok=True)
     
-    # Build path: _test/{stain_normalized|original}/{test_folder}/
-    full_path = test_base / norm_dir / args.test_folder
+    # Get predictions at threshold
+    preds = (probs >= threshold).astype(int)
     
-    return full_path
+    # Categorize predictions
+    tp_idx = np.where((preds == 1) & (labels == 1))[0]
+    tn_idx = np.where((preds == 0) & (labels == 0))[0]
+    fp_idx = np.where((preds == 1) & (labels == 0))[0]
+    fn_idx = np.where((preds == 0) & (labels == 1))[0]
+    
+    categories = {
+        "true_positive": tp_idx,
+        "true_negative": tn_idx,
+        "false_positive": fp_idx,
+        "false_negative": fn_idx
+    }
+    
+    rng = np.random.default_rng(GLOBAL_SEED)
+    
+    for category, indices in categories.items():
+        if len(indices) == 0:
+            print(f"[Examples] No {category} examples found")
+            continue
+            
+        category_dir = examples_dir / category
+        category_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Randomly sample examples
+        n_samples = min(num_examples, len(indices))
+        sampled_idx = rng.choice(indices, size=n_samples, replace=False)
+        
+        for i, idx in enumerate(sampled_idx):
+            file_path = files[idx]
+            file_ext = Path(file_path).suffix.lower()
+            
+            # Load and preprocess image (same as inference)
+            if file_ext in ['.tif', '.tiff']:
+                try:
+                    img = tifffile.imread(file_path)
+                    if img.dtype == np.uint16:
+                        img = (img / 256).astype(np.uint8)
+                except Exception:
+                    with Image.open(file_path) as pil_img:
+                        img = np.array(pil_img)
+            else:
+                with Image.open(file_path) as pil_img:
+                    img = np.array(pil_img)
+            
+            # Handle grayscale and convert to float32
+            if img.ndim == 2:
+                img_gray = img.astype(np.float32)
+            elif img.ndim == 3 and img.shape[2] == 1:
+                img_gray = img.squeeze().astype(np.float32)
+            elif img.ndim == 3:
+                img_gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY).astype(np.float32)
+            else:
+                img_gray = img.astype(np.float32)
+            
+            # Apply percentile normalization if requested for examples
+            # (independent of whether inference used it - we're loading raw images)
+            if percentile_norm_examples:
+                plow, phigh = np.percentile(img_gray, (p_low, p_high))
+                scale = max(phigh - plow, 1e-3)
+                img_gray = np.clip((img_gray - plow) / scale, 0, 1)
+                img_gray = (img_gray * 255.0).astype(np.uint8)
+            else:
+                img_gray = img_gray.astype(np.uint8)
+            
+            # Convert to RGB
+            img = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2RGB)
+            
+            # Resize to 299x299 (InceptionV3 input size)
+            img_resized = cv2.resize(img, (299, 299), interpolation=cv2.IMWRITE_JPEG_OPTIMIZE)
+            
+            # Apply InceptionV3 preprocessing (scale to [-1, 1])
+            img_preprocessed = preprocess_input(img_resized.astype(np.float32))
+            
+            # Convert back to displayable range [0, 255]
+            img_display = ((img_preprocessed + 1.0) * 127.5).astype(np.uint8)
+            
+            # Save with metadata in filename
+            prob = probs[idx]
+            label = labels[idx]
+            filename = f"{i:03d}_prob{prob:.3f}_label{label}.jpg"
+            save_path = category_dir / filename
+            
+            # Convert RGB to BGR for cv2.imwrite
+            img_bgr = cv2.cvtColor(img_display, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(str(save_path), img_bgr, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        
+        print(f"[Examples] Saved {n_samples} {category} examples to {category_dir}")
+    
+    print(f"[Examples] All examples saved to {examples_dir}")
 
 
 def dump_outputs(output_dir: Path, files: List[str], labels: np.ndarray, probs: np.ndarray, metrics_dict: Dict, slide_summary: Dict | None = None):
@@ -483,41 +669,42 @@ def dump_outputs(output_dir: Path, files: List[str], labels: np.ndarray, probs: 
 def main():
     args = parse_args()
     
-    # Auto-set output directory with structured naming matching full_evaluation_enhanced.py
+    # Auto-set output directory with structured naming
     if args.output_dir == "eval_outputs":
         checkpoint_dir = Path(args.weights).parent
         
-        # Build folder name: {test_folder}_{stain|original}[_tta_{mode}]
-        data_source = "stain" if args.stain_normalized else "original"
+        # Extract test folder name from path
+        test_dir_path = Path(args.test_dir)
+        test_folder_name = test_dir_path.name
         
         # Add enhancement suffixes
         enhancement_suffixes = []
         if args.tta != "none":
             enhancement_suffixes.append(f"tta_{args.tta}")
+        if args.percentile_norm:
+            enhancement_suffixes.append("percentile")
         
         # Build final folder name
         if enhancement_suffixes:
-            folder_name = f"{args.test_folder}_{data_source}_{'_'.join(enhancement_suffixes)}"
+            folder_name = f"{test_folder_name}_{'_'.join(enhancement_suffixes)}"
         else:
-            folder_name = f"{args.test_folder}_{data_source}"
+            folder_name = test_folder_name
         
         # Set structured output directory
         args.output_dir = str(checkpoint_dir / "evaluation" / folder_name)
         print(f"[Output] Structured output directory: {args.output_dir}")
-        print(f"[Output]   Dataset: {args.test_folder}")
-        print(f"[Output]   Normalization: {data_source}")
+        print(f"[Output]   Dataset: {test_folder_name}")
         if enhancement_suffixes:
             print(f"[Output]   Enhancements: {', '.join(enhancement_suffixes)}")
 
-    # Resolve test dataset path using new simplified interface
-    split_dir = resolve_test_path(args)
+    # Use direct test directory path
+    split_dir = Path(args.test_dir)
     
     # Validate path exists
     if not split_dir.exists():
         raise FileNotFoundError(
             f"Test dataset not found: {split_dir}\n"
-            f"Expected structure: {args.test_base}/{'stain_normalized' if args.stain_normalized else 'original'}/{args.test_folder}/\n"
-            f"Please ensure the dataset has been built with build_test_class_dataset.py"
+            f"Please ensure the directory exists and has been built with build_test_class_dataset.py"
         )
     
     # Validate dataset structure (adipose and not_adipose folders)
@@ -528,10 +715,12 @@ def main():
         )
     
     print(f"[Dataset] Using test set: {split_dir}")
-    print(f"[Dataset] Normalization: {'stain_normalized' if args.stain_normalized else 'original'}")
 
     files, labels = list_files(split_dir)
     print(f"[Eval] Loaded {len(files)} tiles ({labels.sum()} positive / {(labels == 0).sum()} negative)")
+    print(f"[Normalization] Percentile normalization: {'ENABLED' if args.percentile_norm else 'DISABLED'}")
+    if args.percentile_norm:
+        print(f"[Normalization]   Percentile range: {args.percentile_low}-{args.percentile_high}")
 
     model = build_model(dropout_rate=args.dropout)
     load_weights(model, args.weights)
@@ -551,8 +740,10 @@ def main():
         val_split_dir = val_root / args.calibration_val_split
         val_files, val_labels = list_files(val_split_dir)
         print(f"[Calibration] Using {len(val_files)} tiles from {val_split_dir} for calibration ({args.calibration}).")
-        val_base_probs = predict_with_tta(model, val_files, val_labels, args.batch_size, TTA_MODES[args.tta])
-        val_probs = average_snapshots(val_base_probs, extra_models, val_files, val_labels, args.batch_size, TTA_MODES[args.tta])
+        val_base_probs = predict_with_tta(model, val_files, val_labels, args.batch_size, TTA_MODES[args.tta],
+                                         args.percentile_norm, args.percentile_low, args.percentile_high)
+        val_probs = average_snapshots(val_base_probs, extra_models, val_files, val_labels, args.batch_size, TTA_MODES[args.tta],
+                                     args.percentile_norm, args.percentile_low, args.percentile_high)
         calibrator = fit_calibrator(val_probs, val_labels, args.calibration)
         calibration_info = {"method": args.calibration}
         calibration_info.update(calibrator[2])
@@ -561,8 +752,10 @@ def main():
         calibration_info["val_calibrated_pr_auc"] = float(metrics.average_precision_score(val_labels, val_probs))
 
     tta_ids = TTA_MODES[args.tta]
-    base_probs = predict_with_tta(model, files, labels, args.batch_size, tta_ids)
-    probs = average_snapshots(base_probs, extra_models, files, labels, args.batch_size, tta_ids)
+    base_probs = predict_with_tta(model, files, labels, args.batch_size, tta_ids,
+                                  args.percentile_norm, args.percentile_low, args.percentile_high)
+    probs = average_snapshots(base_probs, extra_models, files, labels, args.batch_size, tta_ids,
+                             args.percentile_norm, args.percentile_low, args.percentile_high)
     probs = apply_calibrator(probs, calibrator)
 
     metrics_dict = evaluate_predictions(labels, probs)
@@ -599,6 +792,20 @@ def main():
     # Generate visualization plots if requested
     if args.save_plots:
         plot_visualizations(labels, probs, metrics_dict['roc_auc'], metrics_dict['pr_auc'], output_dir)
+    
+    # Save example images if requested
+    if args.save_examples:
+        save_example_images(
+            files=files,
+            labels=labels,
+            probs=probs,
+            output_dir=output_dir,
+            num_examples=args.num_examples,
+            percentile_norm_examples=args.percentile_norm_examples,
+            inference_percentile_norm=args.percentile_norm,
+            p_low=args.percentile_low,
+            p_high=args.percentile_high
+        )
 
     print("\n[Post-processing options]")
     print("- Use --save-plots to generate ROC/PR/calibration curves and probability histograms.")

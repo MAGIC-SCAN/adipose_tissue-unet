@@ -26,11 +26,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 import re
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import cv2
 import numpy as np
-from PIL import Image
+import tifffile
 from tqdm import tqdm
 
 from src.utils.seed_utils import get_project_seed
@@ -72,44 +72,53 @@ def parse_args() -> argparse.Namespace:
         "Build adipose vs. not-adipose classifier dataset",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--data-root", type=str, default=str(DEFAULT_DATA_ROOT))
+    parser.add_argument("--data-root", type=str, required=True,
+                        help="Path to dataset root (e.g., /path/to/Meat_Luci_Tulane)")
+    parser.add_argument("--channel", type=str, required=True, choices=['ecm', 'pseudocolored'],
+                        help="Channel to use: 'ecm' (ECM_channel/) or 'pseudocolored' (Pseudocolored/)")
     parser.add_argument("--tile-size", type=int, default=1024,
                         help="Tile edge length in pixels (use 1024 so tiles can double as segmentation inputs).")
     parser.add_argument("--stride", type=int, default=1024,
                         help="Stride in pixels; defaults to non-overlapping 1024x1024 tiling.")
-    parser.add_argument("--adipose-threshold", type=float, default=0.10,
+    parser.add_argument("--adipose-threshold", type=float, default=0.025,
                         help="Minimum adipose mask coverage (0-1) for a tile to be labeled adipose.")
     parser.add_argument("--val-ratio", type=float, default=0.20)
     parser.add_argument("--test-ratio", type=float, default=0.0,
                         help="Ratio of slides reserved for test split (default: 0.0, use external test set).")
-    parser.add_argument("--white-threshold", type=int, default=235)
+    parser.add_argument("--white-threshold", type=int, default=245)
     parser.add_argument("--white-ratio-limit", type=float, default=0.70)
     parser.add_argument("--blurry-threshold", type=float, default=7.5)
-    parser.add_argument("--min-confidence", type=int, choices=[1, 2, 3], default=2)
+    parser.add_argument("--min-confidence-train", type=int, choices=[1, 2, 3], default=1,
+                        help="Minimum confidence for TRAINING set (default: 1 - all annotations, including uncertain).")
+    parser.add_argument("--min-confidence-val", type=int, choices=[1, 2, 3], default=2,
+                        help="Minimum confidence for VAL/TEST sets (default: 2 - medium/high only, excludes uncertain).")
+    parser.add_argument("--include-ambiguous", type=lambda x: x.lower() == 'true', default=False,
+                        metavar='BOOL',
+                        help="Include ambiguous tiles (0 < adipose_ratio < threshold) in VAL/TEST sets (true/false, default: false - excludes ambiguous from all splits).")
     parser.add_argument("--jpeg-quality", type=int, default=100)
     parser.add_argument("--seed", type=int, default=GLOBAL_SEED)
-    parser.add_argument("--keep-white", action="store_true", default=True,
-                        help="Keep white tiles as not_adipose (default: True for binary classification).")
-    parser.add_argument("--drop-white", action="store_false", dest="keep_white",
-                        help="Drop white tiles instead of keeping them.")
-    parser.add_argument("--keep-blurry", action="store_true", default=True,
-                        help="Keep blurry tiles as not_adipose (default: True for binary classification).")
-    parser.add_argument("--drop-blurry", action="store_false", dest="keep_blurry",
-                        help="Drop blurry tiles instead of keeping them.")
+    parser.add_argument("--keep-white", type=lambda x: x.lower() == 'true', default=True,
+                        metavar='BOOL',
+                        help="Keep white tiles (true/false, default: true - trusts annotator judgment).")
+    parser.add_argument("--keep-blurry", type=lambda x: x.lower() == 'true', default=True,
+                        metavar='BOOL',
+                        help="Keep blurry tiles (true/false, default: true - trusts annotator judgment).")
     parser.add_argument("--balance-classes", action="store_true", default=True,
                         help="Balance classes by undersampling majority class (default: True for binary classification).")
     parser.add_argument("--no-balance", dest="balance_classes", action="store_false",
                         help="Disable class balancing (keep natural imbalanced distribution).")
     parser.add_argument("--target-adipose-ratio", type=float, default=0.40,
                         help="Target ratio for adipose class when balancing (0.4 = 40%% adipose, 60%% not_adipose).")
-    parser.add_argument("--stain-normalize", dest="stain_normalize", action="store_true", default=True,
-                        help="Apply SYBR Gold + Eosin stain normalization before tiling.")
-    parser.add_argument("--no-stain-normalize", action="store_false", dest="stain_normalize",
-                        help="Disable stain normalization (overrides --stain-normalize).")
+    parser.add_argument("--stain-normalize", type=lambda x: x.lower() == 'true', required=True,
+                        metavar='BOOL',
+                        help="Apply SYBR Gold + Eosin stain normalization (true/false, required).")
     parser.add_argument("--reference-path", type=str, default=None,
                         help="Explicit reference image for stain normalization.")
     parser.add_argument("--reference-metadata", type=str, default=DEFAULT_REFERENCE_METADATA,
                         help="Fallback metadata file used by load_best_reference().")
+    parser.add_argument("--exclude-test-duplicates", type=lambda x: x.lower() == 'true', default=True,
+                        metavar='BOOL',
+                        help="Exclude images from main folder that exist in test/ subfolder (true/false, default: true).")
     return parser.parse_args()
 
 
@@ -129,7 +138,13 @@ def validate_args(args: argparse.Namespace) -> None:
 def setup_paths(args: argparse.Namespace) -> Tuple[Path, Path, Path]:
     global DATA_ROOT, PSEUDO_DIR, FAT_JSON_DIR, BUILD_ROOT
     DATA_ROOT = Path(os.path.expanduser(args.data_root))
-    PSEUDO_DIR = DATA_ROOT / "Pseudocolored"
+    
+    # Set image directory based on channel
+    if args.channel == 'ecm':
+        PSEUDO_DIR = DATA_ROOT / "ECM_channel"
+    else:  # pseudocolored
+        PSEUDO_DIR = DATA_ROOT / "Pseudocolored"
+    
     FAT_JSON_DIR = DATA_ROOT / "Masks" / "fat"
 
     missing = [p for p in (DATA_ROOT, PSEUDO_DIR, FAT_JSON_DIR) if not p.exists()]
@@ -137,18 +152,44 @@ def setup_paths(args: argparse.Namespace) -> Tuple[Path, Path, Path]:
         raise SystemExit(f"Required directory missing: {missing[0]}")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    BUILD_ROOT = DATA_ROOT / f"_build_class_{timestamp}"
+    # Only add "_ecm" suffix when using ECM channel
+    channel_suffix = "_ecm" if args.channel == 'ecm' else ""
+    BUILD_ROOT = DATA_ROOT / f"_build_class{channel_suffix}_{timestamp}"
     BUILD_ROOT.mkdir(parents=True, exist_ok=False)
 
     dataset_dir = BUILD_ROOT / "dataset"
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
     config_path = BUILD_ROOT / "config.json"
+    config_data = vars(args).copy()
+    config_data['build_timestamp'] = timestamp  # Save timestamp for training script
     with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(vars(args), f, indent=2)
+        json.dump(config_data, f, indent=2)
 
     print(f"[Setup] Build directory: {BUILD_ROOT}")
     return BUILD_ROOT, dataset_dir, config_path
+
+
+def find_image_by_stem(image_dir: Path, stem: str) -> Optional[Path]:
+    """Find image file with given stem, supporting multiple formats."""
+    for ext in ['.jpg', '.jpeg', '.png', '.tif', '.tiff']:
+        candidate = image_dir / f"{stem}{ext}"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def get_test_image_stems(image_dir: Path) -> Set[str]:
+    """Get stems of all images in the test/ subdirectory."""
+    test_dir = image_dir / "test"
+    if not test_dir.exists():
+        return set()
+    
+    test_stems = set()
+    for ext in ['.jpg', '.jpeg', '.png', '.tif', '.tiff']:
+        for img_path in test_dir.glob(f"*{ext}"):
+            test_stems.add(img_path.stem)
+    return test_stems
 
 
 def parse_image_stem_from_json(json_path: Path, cls: str = "fat") -> str:
@@ -188,8 +229,22 @@ def re_search_cached(pattern: str, text: str):
 
 @lru_cache(maxsize=256)
 def get_image_dimensions(image_path: str) -> Tuple[int, int]:
-    with Image.open(image_path) as img:
-        return img.size  # (width, height)
+    """Get image dimensions (width, height) using tifffile with fallback."""
+    try:
+        img = tifffile.imread(image_path)
+    except Exception:
+        # Fallback for JPEG/PNG using cv2
+        img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+        if img is None:
+            raise ValueError(f"Failed to load image: {image_path}")
+    
+    if img.ndim == 2:
+        height, width = img.shape
+    elif img.ndim == 3:
+        height, width = img.shape[:2]
+    else:
+        raise ValueError(f"Unexpected image dimensions: {img.shape}")
+    return width, height
 
 
 def load_json_annotations(json_path: Path, min_confidence: int) -> List[np.ndarray]:
@@ -219,6 +274,88 @@ def load_json_annotations(json_path: Path, min_confidence: int) -> List[np.ndarr
     return polys
 
 
+def slide_has_valid_annotations(json_path: Path, min_confidence: int) -> bool:
+    """Check if slide has at least one annotation meeting confidence threshold.
+    
+    This ensures we only process slides that were actually annotated.
+    Slides with no valid annotations are skipped entirely.
+    """
+    with open(json_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    records = payload if isinstance(payload, list) else [payload]
+    
+    for ann in records:
+        if not isinstance(ann, dict):
+            continue
+        confidence = ann.get("confidenceScore")
+        # Check if this annotation meets confidence threshold
+        if confidence is None or confidence >= min_confidence:
+            # Check if it has valid polygon data
+            elements = ann.get("annotation", {}).get("elements", [])
+            for elem in elements:
+                if not isinstance(elem, dict):
+                    continue
+                if elem.get("type") == "polyline":
+                    pts = elem.get("points", [])
+                    if pts and len(pts) >= 3:
+                        return True  # Found at least one valid annotation
+    return False  # No valid annotations found
+
+
+def get_tile_annotations(json_path: Path, tile_bbox: Tuple[int, int, int, int], min_confidence: int) -> Tuple[List[np.ndarray], bool]:
+    """Get annotations within tile bounds and flag tiles that only contain low-confidence marks.
+    
+    Returns:
+        (polygons, low_confidence_only): polygons meeting the confidence threshold (shifted to tile coords) and
+        a flag indicating that the tile intersected *only* low-confidence annotations.
+    """
+    with open(json_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    records = payload if isinstance(payload, list) else [payload]
+    polys: List[np.ndarray] = []
+    has_low_conf = False
+    has_high_conf = False
+    x1, y1, x2, y2 = tile_bbox
+    
+    for ann in records:
+        if not isinstance(ann, dict):
+            continue
+        confidence = ann.get("confidenceScore")
+        
+        elements = ann.get("annotation", {}).get("elements", [])
+        for elem in elements:
+            if not isinstance(elem, dict) or elem.get("type") != "polyline":
+                continue
+            pts = elem.get("points", [])
+            if not pts or len(pts) < 3:
+                continue
+                
+            # Check if polygon intersects with tile
+            coords = np.array([[int(round(p[0])), int(round(p[1]))] for p in pts], dtype=np.int32)
+            if len(coords) < 3:
+                continue
+                
+            # Simple bounding box intersection check
+            poly_xs = coords[:, 0]
+            poly_ys = coords[:, 1]
+            if (poly_xs.max() < x1 or poly_xs.min() > x2 or 
+                poly_ys.max() < y1 or poly_ys.min() > y2):
+                continue  # Polygon doesn't intersect tile
+            
+            # Polygon intersects tile - check confidence
+            if confidence is not None and confidence < min_confidence:
+                has_low_conf = True
+                continue
+            # Shift polygon coordinates to tile-local space
+            local_coords = coords - np.array([x1, y1])
+            polys.append(local_coords)
+            has_high_conf = True
+    
+    return polys, (has_low_conf and not has_high_conf)
+
+
 def create_binary_mask(polygons: List[np.ndarray], width: int, height: int) -> np.ndarray:
     mask = np.zeros((height, width), dtype=np.uint8)
     if not polygons:
@@ -229,13 +366,23 @@ def create_binary_mask(polygons: List[np.ndarray], width: int, height: int) -> n
     return mask
 
 
-def discover_slides(min_confidence: int) -> Dict[str, SlideRecord]:
+def discover_slides(min_confidence: int, exclude_test: bool) -> Dict[str, SlideRecord]:
     if not FAT_JSON_DIR.exists():
         raise SystemExit(f"No fat JSON directory found at {FAT_JSON_DIR}")
+
+    # Get test image stems to exclude if requested
+    test_stems = get_test_image_stems(PSEUDO_DIR) if exclude_test else set()
+    if test_stems:
+        print(f"[Discovery] Found {len(test_stems)} images in test/ subfolder to exclude from train/val")
 
     grouped: Dict[str, List[Path]] = {}
     for json_path in FAT_JSON_DIR.glob("*.json"):
         base = parse_image_stem_from_json(json_path, "fat")
+        
+        # Skip if this image is in the test folder
+        if base in test_stems:
+            continue
+            
         grouped.setdefault(base, []).append(json_path)
 
     selections: Dict[str, SlideRecord] = {}
@@ -243,8 +390,8 @@ def discover_slides(min_confidence: int) -> Dict[str, SlideRecord]:
         chosen = select_latest_json(files)
         if not chosen:
             continue
-        image_path = PSEUDO_DIR / f"{base}.jpg"
-        if not image_path.exists():
+        image_path = find_image_by_stem(PSEUDO_DIR, base)
+        if not image_path:
             continue
         width, height = get_image_dimensions(str(image_path))
         selections[base] = SlideRecord(base, image_path, chosen, width, height)
@@ -306,8 +453,51 @@ def jpeg_params(quality: int) -> List[int]:
 
 def extract_tile(img_path: Path, x: int, y: int, size: int,
                  stain_normalizer: Optional[ReinhardStainNormalizer]) -> np.ndarray:
-    with Image.open(img_path) as img:
-        tile_rgb = np.array(img.crop((x, y, x + size, y + size)))
+    """Extract tile using tifffile with fallback and convert to 8-bit RGB."""
+    try:
+        img = tifffile.imread(str(img_path))
+    except Exception:
+        # Fallback for JPEG/PNG using cv2
+        img = cv2.imread(str(img_path), cv2.IMREAD_UNCHANGED)
+        if img is None:
+            raise ValueError(f"Failed to load image: {img_path}")
+        # cv2 loads as BGR, convert to RGB
+        if img.ndim == 3 and img.shape[2] == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    
+    # Crop the tile
+    tile = img[y:y+size, x:x+size]
+    
+    # Convert to RGB if needed
+    if tile.ndim == 2:
+        # Grayscale to RGB
+        tile_rgb = np.stack([tile, tile, tile], axis=-1)
+    elif tile.ndim == 3:
+        if tile.shape[2] == 1:
+            # Single channel to RGB
+            tile_rgb = np.repeat(tile, 3, axis=2)
+        elif tile.shape[2] == 4:
+            # RGBA to RGB (drop alpha)
+            tile_rgb = tile[:, :, :3]
+        elif tile.shape[2] == 3:
+            # Already RGB
+            tile_rgb = tile
+        else:
+            raise ValueError(f"Unexpected number of channels: {tile.shape[2]}")
+    else:
+        raise ValueError(f"Unexpected tile dimensions: {tile.shape}")
+    
+    # Ensure 8-bit range
+    if tile_rgb.dtype == np.uint16:
+        tile_rgb = (tile_rgb / 256).astype(np.uint8)
+    elif tile_rgb.dtype == np.float32 or tile_rgb.dtype == np.float64:
+        if tile_rgb.max() <= 1.0:
+            tile_rgb = (tile_rgb * 255).astype(np.uint8)
+        else:
+            tile_rgb = tile_rgb.astype(np.uint8)
+    elif tile_rgb.dtype != np.uint8:
+        tile_rgb = tile_rgb.astype(np.uint8)
+    
     if stain_normalizer is not None:
         try:
             tile_rgb = stain_normalizer.normalize_image(tile_rgb)
@@ -401,8 +591,13 @@ def ensure_split_dirs(dataset_dir: Path, splits: Sequence[str]) -> Dict[str, Dic
 
 def process_slide(slide: SlideRecord, split: str, args: argparse.Namespace,
                   stain_normalizer, dest_dirs, manifests, stats) -> None:
-    polygons = load_json_annotations(slide.json_path, args.min_confidence)
-    mask = create_binary_mask(polygons, slide.width, slide.height)
+    # Use split-specific confidence: train=1+, val/test=2+
+    min_confidence = args.min_confidence_train if split == "train" else args.min_confidence_val
+
+    # Skip slides with no valid annotations (ensures negatives only from annotated slides)
+    if not slide_has_valid_annotations(slide.json_path, min_confidence):
+        stats["skipped_no_annotations"] = stats.get("skipped_no_annotations", 0) + 1
+        return
 
     coords = tile_coords(slide.height, slide.width, args.tile_size, args.stride)
     if not coords:
@@ -420,16 +615,44 @@ def process_slide(slide: SlideRecord, split: str, args: argparse.Namespace,
     for row, col, ys, xs in coords:
         tile = extract_tile(slide.image_path, xs, ys, args.tile_size, stain_normalizer)
         quality, white_ratio, lap_var = evaluate_quality(tile, *tile_quality_params)
-        if quality == "white" and not args.keep_white:
-            stats["skipped_white"] += 1
+        
+        # Check for low-confidence annotations in this tile
+        tile_bbox = (xs, ys, xs + args.tile_size, ys + args.tile_size)
+        tile_polys, has_low_conf = get_tile_annotations(slide.json_path, tile_bbox, min_confidence)
+        
+        # Skip tiles that only contain low-confidence annotations
+        if has_low_conf:
+            stats["skipped_low_confidence"] = stats.get("skipped_low_confidence", 0) + 1
             continue
-        if quality == "blurry" and not args.keep_blurry:
-            stats["skipped_blurry"] += 1
-            continue
-
-        mask_patch = mask[ys:ys + args.tile_size, xs:xs + args.tile_size]
-        adipose_ratio = float(mask_patch.mean()) if mask_patch.size else 0.0
+        
+        # Create mask from tile-level annotations and classify
+        tile_mask = create_binary_mask(tile_polys, args.tile_size, args.tile_size)
+        adipose_ratio = float(tile_mask.mean()) if tile_mask.size else 0.0
+        
+        # Exclude ambiguous tiles: has some fat but below threshold
+        # These are neither clear positives nor clear negatives
+        # For train: always exclude (prevents label noise)
+        # For val/test: exclude unless --include-ambiguous is true (allows testing edge cases)
+        if 0 < adipose_ratio < args.adipose_threshold:
+            if split == "train" or not args.include_ambiguous:
+                stats["skipped_ambiguous"] = stats.get("skipped_ambiguous", 0) + 1
+                continue
+            # For val/test with include_ambiguous=true, keep as not_adipose
+            # (below threshold but worth evaluating model performance on edge cases)
+        
         label = "adipose" if adipose_ratio >= args.adipose_threshold else "not_adipose"
+        
+        # Filtering logic:
+        # - ALWAYS keep positive (adipose) tiles, regardless of quality
+        # - For negative (not_adipose) tiles, apply quality filters if enabled
+        # - Default: keep all tiles (trusts annotator judgment)
+        if label == "not_adipose":
+            if quality == "white" and not args.keep_white:
+                stats["skipped_white"] += 1
+                continue  # Skip white negatives
+            if quality == "blurry" and not args.keep_blurry:
+                stats["skipped_blurry"] += 1
+                continue  # Skip blurry negatives
 
         out_name = f"{slide.base}_r{row}_c{col}.jpg"
         out_path = dataset_root[label] / out_name
@@ -608,7 +831,8 @@ def main():
     np.random.seed(args.seed)
 
     _, dataset_dir, _ = setup_paths(args)
-    slides = discover_slides(args.min_confidence)
+    # Discover slides using train confidence level (most permissive)
+    slides = discover_slides(args.min_confidence_train, args.exclude_test_duplicates)
     split_map = assign_splits(slides.keys(), args.val_ratio, args.test_ratio, args.seed)
     used_splits = sorted(set(split_map.values()))
     dest_dirs = ensure_split_dirs(dataset_dir, used_splits)
@@ -620,6 +844,9 @@ def main():
         "skipped_white": 0,
         "skipped_blurry": 0,
         "skipped_slides_small": 0,
+        "skipped_low_confidence": 0,
+        "skipped_ambiguous": 0,
+        "skipped_no_annotations": 0,
         "per_split": {split: {"adipose": 0, "not_adipose": 0} for split in used_splits},
     }
 
@@ -663,11 +890,30 @@ def main():
             # Update manifest
             manifests[split] = balanced["adipose"] + balanced["not_adipose"]
             
-            # Update stats
-            stats["per_split"][split] = {
-                "adipose": len(balanced["adipose"]),
-                "not_adipose": len(balanced["not_adipose"])
-            }
+            # Remove files that were dropped during balancing to keep disk layout in sync
+            keep_rel_paths = set(row[0] for row in manifests[split])
+            removed_files = 0
+            train_root = dataset_dir / split
+            for label in ("adipose", "not_adipose"):
+                label_dir = train_root / label
+                for img_path in label_dir.glob("*.jpg"):
+                    rel = img_path.relative_to(BUILD_ROOT)
+                    if str(rel) not in keep_rel_paths:
+                        img_path.unlink()
+                        removed_files += 1
+            if removed_files:
+                print(f"[Balance] Deleted {removed_files} dropped tile(s) from {split} folders to match manifest.")
+
+    # Recompute split counts and tiles_written based on final manifests (post-balancing)
+    stats["per_split"] = {split: {"adipose": 0, "not_adipose": 0} for split in manifests.keys()}
+    stats["tiles_written"] = 0
+    for split, rows in manifests.items():
+        for row in rows:
+            label = row[1]
+            if label not in stats["per_split"][split]:
+                stats["per_split"][split][label] = 0
+            stats["per_split"][split][label] += 1
+        stats["tiles_written"] += len(rows)
 
     # Write manifests
     write_manifests(manifests, dataset_dir)
@@ -680,6 +926,9 @@ def main():
     print(f"  Tiles written: {stats['tiles_written']}")
     print(f"  Skipped (white): {stats['skipped_white']}")
     print(f"  Skipped (blurry): {stats['skipped_blurry']}")
+    print(f"  Skipped (low confidence only): {stats['skipped_low_confidence']}")
+    print(f"  Skipped (ambiguous): {stats['skipped_ambiguous']}")
+    print(f"  Skipped slides (no annotations >= conf): {stats['skipped_no_annotations']}")
     print(f"  Skipped slides (too small): {stats['skipped_slides_small']}")
     for split, counts in stats["per_split"].items():
         print(f"  {split}: adipose={counts['adipose']} not_adipose={counts['not_adipose']}")

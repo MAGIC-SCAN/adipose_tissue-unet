@@ -1,0 +1,55 @@
+{
+  "selection_analysis": {
+    "total_candidates": 350,
+    "analysis_date": "2025-10-29",
+    "stain_type": "SYBR Gold + Eosin",
+    "selection_criteria": "Most balanced performance across technical quality, color characteristics, and biological relevance"
+  },
+  "selected_reference": {
+    "name": "12.12 Beef Shoulder 3_grid_5x5_r7_c0.jpg",
+    "path": "/home/luci/Data_for_ML/Meat_Luci_Tulane/Pseudocolored/12.12 Beef Shoulder 3_grid_5x5_r7_c0.jpg",
+    "composite_score": 0.681,
+    "rank": 3,
+    "technical_quality": 0.899,
+    "color_characteristics": 0.548,
+    "biological_relevance": 0.516,
+    "laplacian_variance": 13.703,
+    "entropy": 7.168,
+    "local_contrast": 1.762,
+    "edge_density": 0.017,
+    "golden_ratio": 5.090e-06,
+    "pink_ratio": 0.969,
+    "eosin_dominance": "96.9%",
+    "adipocyte_coverage": 0.257,
+    "background_quality": 0.425,
+    "stain_type": "SYBR Gold + Eosin",
+    "selection_reason": "Most balanced candidate with excellent technical quality (89.9%), good color separation (54.8%), and solid biological content (51.6%). Provides optimal trade-off between all evaluation criteria."
+  },
+  "alternatives": {
+    "rank_1": {
+      "name": "12.12 Beef Shoulder 2_grid_5x5_r4_c3.jpg",
+      "score": 0.703,
+      "reason": "Highest overall score but slightly less balanced"
+    },
+    "rank_2": {
+      "name": "B. Shoulder 1.2_grid_5x5_r1_c0.jpg", 
+      "score": 0.689,
+      "reason": "Purest stain profile (99.0% Eosin) but lower biological diversity"
+    }
+  },
+  "normalization_parameters": {
+    "lab_l_mean": 62.5,
+    "lab_l_std": 15.2,
+    "lab_a_mean": 8.3,
+    "lab_a_std": 12.1,
+    "lab_b_mean": 14.7,
+    "lab_b_std": 8.9
+  },
+  "quality_validation": {
+    "meets_threshold": true,
+    "sharpness_quality": "excellent",
+    "color_separation": "good",
+    "biological_content": "adequate",
+    "overall_rating": "optimal_balanced"
+  }
+}
