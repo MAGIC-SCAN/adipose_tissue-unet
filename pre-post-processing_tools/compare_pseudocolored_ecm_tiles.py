@@ -7,8 +7,49 @@ Samples tiles from:
 2. Mismatches (8 WSI with different tile counts)
 
 Generates:
-- CSV with comparison metrics
+- CSV with comparison metrics (MSE, SSIM, histogram correlation)
 - Side-by-side visual comparisons with difference heatmaps
+
+USAGE EXAMPLES:
+
+1. Compare tiles from both modalities:
+   python pre-post-processing_tools/compare_pseudocolored_ecm_tiles.py \
+     --pseudocolored-dir /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane/Pseudocolored \
+     --ecm-dir /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane/ECM_channel \
+     --output-dir /home/luci/adipose_tissue-unet/pre-post-processing_tools/tile_comparison
+
+2. Sample more tiles (default is 5 per category):
+   python pre-post-processing_tools/compare_pseudocolored_ecm_tiles.py \
+     --pseudocolored-dir data/Meat_Luci_Tulane/Pseudocolored \
+     --ecm-dir data/Meat_MS_Tulane/ECM_channel \
+     --output-dir pre-post-processing_tools/tile_comparison \
+     --num-samples 10
+
+3. Custom seed for reproducibility:
+   python pre-post-processing_tools/compare_pseudocolored_ecm_tiles.py \
+     --pseudocolored-dir data/Meat_Luci_Tulane/Pseudocolored \
+     --ecm-dir data/Meat_MS_Tulane/ECM_channel \
+     --output-dir pre-post-processing_tools/tile_comparison \
+     --seed 42
+
+OUTPUT STRUCTURE:
+  output_dir/
+    ├── comparison_metrics.csv         # Quantitative metrics
+    ├── perfect_matches/               # Tiles with matching counts
+    │   ├── comparison_001.png         # Side-by-side + diff heatmap
+    │   └── ...
+    └── mismatches/                    # Tiles with count discrepancies
+        ├── comparison_001.png
+        └── ...
+
+METRICS:
+  - MSE: Mean Squared Error (lower = more similar)
+  - SSIM: Structural Similarity Index (higher = more similar, 0-1)
+  - Histogram Correlation: Color distribution similarity (higher = more similar)
+
+USE CASE:
+  Validate alignment between Pseudocolored (Lucy) and ECM (MS) modalities
+  before transferring annotations.
 """
 
 import argparse

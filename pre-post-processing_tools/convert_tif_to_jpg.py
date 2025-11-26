@@ -1,6 +1,50 @@
 #!/usr/bin/env python3
 """
 Convert TIF files to 8-bit JPG format using the same methods as large_wsi_to_small_wsi_Lucy.py
+
+Handles:
+  - 16-bit → 8-bit conversion with normalization
+  - Grayscale → RGB conversion
+  - Metadata preservation (where possible)
+
+USAGE EXAMPLES:
+
+1. Convert directory of TIF files to JPG:
+   python pre-post-processing_tools/convert_tif_to_jpg.py \
+     --input-dir /home/luci/adipose_tissue-unet/data/raw_tif \
+     --output-dir /home/luci/adipose_tissue-unet/data/converted_jpg
+
+2. Convert with custom JPEG quality:
+   python pre-post-processing_tools/convert_tif_to_jpg.py \
+     --input-dir data/raw_tif \
+     --output-dir data/converted_jpg \
+     --quality 95
+
+3. Preserve directory structure:
+   python pre-post-processing_tools/convert_tif_to_jpg.py \
+     --input-dir data/raw_tif \
+     --output-dir data/converted_jpg \
+     --recursive
+
+4. Convert single file:
+   python pre-post-processing_tools/convert_tif_to_jpg.py \
+     --input data/raw_tif/image.tif \
+     --output data/converted_jpg/image.jpg \
+     --quality 100
+
+CONVERSION STEPS:
+  1. Load TIF (supports 8-bit, 16-bit, RGB, grayscale)
+  2. Normalize 16-bit to 8-bit (min-max scaling)
+  3. Convert grayscale/palette to RGB
+  4. Save as JPEG with specified quality
+
+OUTPUT:
+  - 8-bit RGB JPEG files
+  - Same base names as input files
+  - Quality: 95 (default) or custom
+
+NOTE: For batch conversion with enhancement, use large_wsi_to_small_wsi_MS.py
+      with --output-format jpg --output-bit-depth 8.
 """
 
 from pathlib import Path

@@ -7,14 +7,67 @@ Addresses common issues in fluorescence microscopy images:
 2. Uneven illumination (gradient across frame)
 3. Low contrast
 
-Usage:
-    python tools/preprocess_small_MS_SIMs.py \
-      --input-dir data/Meat_MS_Tulane/ECM_channel \
-      --output-dir data/Meat_MS_Tulane/ECM_channel/corrected \
-      --banding-method fft \
-      --illumination-method rolling-ball \
-      --enhance-contrast \
-      --visualize
+USAGE EXAMPLES:
+
+1. Basic preprocessing (FFT deband + rolling ball + contrast enhancement):
+   python pre-post-processing_tools/preprocess_small_MS_SIMs.py \
+     --input-dir /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane/ECM_channel \
+     --output-dir /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane/ECM_channel/corrected \
+     --banding-method fft \
+     --illumination-method rolling-ball \
+     --enhance-contrast
+
+2. Only remove banding (no illumination correction):
+   python pre-post-processing_tools/preprocess_small_MS_SIMs.py \
+     --input-dir data/Meat_MS_Tulane/ECM_channel \
+     --output-dir data/Meat_MS_Tulane/ECM_channel/corrected \
+     --banding-method fft \
+     --illumination-method none
+
+3. Visualize corrections (saves before/after comparisons):
+   python pre-post-processing_tools/preprocess_small_MS_SIMs.py \
+     --input-dir data/Meat_MS_Tulane/ECM_channel \
+     --output-dir data/Meat_MS_Tulane/ECM_channel/corrected \
+     --banding-method fft \
+     --illumination-method rolling-ball \
+     --enhance-contrast \
+     --visualize
+
+4. Polynomial illumination correction (alternative to rolling ball):
+   python pre-post-processing_tools/preprocess_small_MS_SIMs.py \
+     --input-dir data/Meat_MS_Tulane/ECM_channel \
+     --output-dir data/Meat_MS_Tulane/ECM_channel/corrected \
+     --banding-method fft \
+     --illumination-method polynomial \
+     --enhance-contrast
+
+5. Gaussian illumination correction (fastest):
+   python pre-post-processing_tools/preprocess_small_MS_SIMs.py \
+     --input-dir data/Meat_MS_Tulane/ECM_channel \
+     --output-dir data/Meat_MS_Tulane/ECM_channel/corrected \
+     --banding-method fft \
+     --illumination-method gaussian \
+     --enhance-contrast
+
+METHODS:
+  Banding Removal:
+    - fft: FFT-based frequency filtering (recommended)
+    - none: Skip banding correction
+  
+  Illumination Correction:
+    - rolling-ball: Morphological rolling ball (best quality, slowest)
+    - polynomial: 2D polynomial surface fitting (balanced)
+    - gaussian: Gaussian blur subtraction (fastest)
+    - none: Skip illumination correction
+  
+  Contrast Enhancement:
+    - CLAHE (Contrast Limited Adaptive Histogram Equalization)
+
+OUTPUT:
+  output_dir/
+    ├── corrected_*.jpg          # Preprocessed images
+    ├── processing_log.json      # Settings and statistics
+    └── visualization/           # Before/after comparisons (if --visualize)
 
 Author: MAGIC-SCAN
 Date: 2024-11-14

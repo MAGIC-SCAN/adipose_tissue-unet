@@ -2,11 +2,51 @@
 """
 Export Adipose Classifier (InceptionV3) TF weights to ONNX.
 
-Example:
-    python pre-post-processing_tools/export_classification_to_onnx.py \
-        --weights checkpoints/classification/classifier_20251111_164323/weights_best.weights.h5 \
-        --output checkpoints/classification/classifier_20251111_164323/weights_best.onnx \
-        --opset 17
+Converts TensorFlow .weights.h5 files to ONNX format for deployment on
+non-Python platforms or for use with ONNX Runtime for faster inference.
+
+USAGE EXAMPLES:
+
+1. Basic export (opset 17, recommended):
+   python pre-post-processing_tools/export_classification_to_onnx.py \
+     --weights checkpoints/classification/20251125_132912_classifier_ecm_adipose_sybreosin/weights_best.weights.h5 \
+     --output checkpoints/classification/20251125_132912_classifier_ecm_adipose_sybreosin/weights_best.onnx
+
+2. Export with custom opset (older ONNX Runtime versions):
+   python pre-post-processing_tools/export_classification_to_onnx.py \
+     --weights checkpoints/classification/*/weights_best.weights.h5 \
+     --output checkpoints/classification/*/weights_best.onnx \
+     --opset 15
+
+3. Export with custom dropout rate (must match training):
+   python pre-post-processing_tools/export_classification_to_onnx.py \
+     --weights checkpoints/classification/*/weights_best.weights.h5 \
+     --output checkpoints/classification/*/weights_best.onnx \
+     --dropout 0.5
+
+INPUT FORMAT:
+  - Shape: (batch, 299, 299, 3)
+  - Type: float32
+  - Range: Preprocessed with InceptionV3 preprocessing
+
+OUTPUT FORMAT:
+  - Shape: (batch, 1)
+  - Type: float32
+  - Range: [0, 1] (sigmoid probability)
+
+NOTE: The exported model includes ImageNet-pretrained InceptionV3 base
+      plus the fine-tuned classification head.
+
+VERIFY EXPORT:
+  Use ONNX Runtime to test:
+  
+  import onnxruntime as ort
+  import numpy as np
+  
+  session = ort.InferenceSession('weights_best.onnx')
+  dummy_input = np.random.randn(1, 299, 299, 3).astype(np.float32)
+  output = session.run(None, {'input': dummy_input})
+  print(output[0].shape)  # Should be (1, 1)
 """
 
 import argparse

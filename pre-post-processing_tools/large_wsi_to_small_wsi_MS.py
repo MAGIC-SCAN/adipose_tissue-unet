@@ -7,8 +7,57 @@ Strategy:
   • Edge regions fall back to tiles sized in multiples of 1024 (e.g., 4096×6144 or 3072×3072)
     to minimize overlap while covering the entire image.
   • Tiles keep the input format by default (metadata preserved) but can be overridden.
-  • Default limits: ≤50 MB per tile, process images larger than 13 112 px on either side
+  • Default limits: ≤50 MB per tile, process images larger than 13 112 px on either side
     or heavier than the file-size cap. A CLI flag lets you adjust the minimum pixel threshold.
+
+USAGE EXAMPLES:
+
+1. Basic tiling (6144×6144 primary, 3072×3072 edge fallback):
+   python pre-post-processing_tools/large_wsi_to_small_wsi_MS.py \
+     --input-dir /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane/raw_WSI \
+     --output-dir /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane/WSI/ECM_channel
+
+2. Save enhanced tiles for annotation (CLAHE, percentile, z-score):
+   python pre-post-processing_tools/large_wsi_to_small_wsi_MS.py \
+     --input-dir data/raw_WSI \
+     --output-dir data/tiles \
+     --save-enhanced \
+     --enhancement-method clahe
+
+3. Convert 16-bit TIFF to 8-bit JPG:
+   python pre-post-processing_tools/large_wsi_to_small_wsi_MS.py \
+     --input-dir data/raw_WSI \
+     --output-dir data/tiles \
+     --output-bit-depth 8 \
+     --output-format jpg
+
+4. Invert intensity for dark-background stains:
+   python pre-post-processing_tools/large_wsi_to_small_wsi_MS.py \
+     --input-dir data/raw_WSI \
+     --output-dir data/tiles \
+     --invert
+
+5. Adjust dimension threshold (process smaller images):
+   python pre-post-processing_tools/large_wsi_to_small_wsi_MS.py \
+     --input-dir data/raw_WSI \
+     --output-dir data/tiles \
+     --min-dimension-px 10000
+
+OUTPUT STRUCTURE:
+  output_dir/
+    ├── Meat_11_13_S5_2_001_x0_y0_w6144_h6144.jpg         # Primary 6144×6144 tile
+    ├── Meat_11_13_S5_2_002_x6144_y0_w6144_h6144.jpg
+    ├── Meat_11_13_S5_2_028_x18240_y36309_w5120_h5120.jpg # Edge fallback (3072 multiple)
+    └── enhanced/                                          # If --save-enhanced
+        ├── Meat_11_13_S5_2_001_x0_y0_w6144_h6144_clahe.jpg
+        └── ...
+
+ENHANCEMENT METHODS:
+  - zscore: Z-score normalization (±3 std → [0,255])
+  - percentile: 1-99% intensity stretching
+  - clahe: Adaptive histogram equalization (best for annotation)
+
+NOTE: Use this for MS data (ECM channel). For Lucy data, use large_wsi_to_small_wsi_Lucy.py.
 """
 
 from dataclasses import dataclass

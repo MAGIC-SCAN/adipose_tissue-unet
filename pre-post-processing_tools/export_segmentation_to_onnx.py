@@ -2,11 +2,50 @@
 """
 Export Adipose U-Net TF weights to ONNX.
 
-Example:
-    python tools/export_weights_to_onnx.py \
-        --weights checkpoints/.../weights_best_overall.weights.h5 \
-        --output checkpoints/.../weights_best_overall.onnx \
-        --opset 17
+Converts TensorFlow .weights.h5 files to ONNX format for deployment on
+non-Python platforms or for use with ONNX Runtime for faster inference.
+
+USAGE EXAMPLES:
+
+1. Basic export (opset 17, recommended):
+   python pre-post-processing_tools/export_segmentation_to_onnx.py \
+     --weights checkpoints/20251104_152203_adipose_sybreosin_1024_finetune/weights_best_overall.weights.h5 \
+     --output checkpoints/20251104_152203_adipose_sybreosin_1024_finetune/weights_best_overall.onnx
+
+2. Export with custom opset (older ONNX Runtime versions):
+   python pre-post-processing_tools/export_segmentation_to_onnx.py \
+     --weights checkpoints/*/weights_best_overall.weights.h5 \
+     --output checkpoints/*/weights_best_overall.onnx \
+     --opset 15
+
+3. Export phase 1 weights (frozen encoder):
+   python pre-post-processing_tools/export_segmentation_to_onnx.py \
+     --weights checkpoints/*/phase1_best.weights.h5 \
+     --output checkpoints/*/phase1_best.onnx
+
+INPUT FORMAT:
+  - Shape: (batch, 1024, 1024, 3)
+  - Type: float32
+  - Range: Normalized according to training stats (z-score or percentile)
+
+OUTPUT FORMAT:
+  - Shape: (batch, 1024, 1024, 1)
+  - Type: float32
+  - Range: [0, 1] (sigmoid probability per pixel)
+
+NOTE: The exported model uses the exact U-Net architecture from
+      segmentation_inference.py (AdiposeUNet class).
+
+VERIFY EXPORT:
+  Use ONNX Runtime to test:
+  
+  import onnxruntime as ort
+  import numpy as np
+  
+  session = ort.InferenceSession('weights_best_overall.onnx')
+  dummy_input = np.random.randn(1, 1024, 1024, 3).astype(np.float32)
+  output = session.run(None, {'input': dummy_input})
+  print(output[0].shape)  # Should be (1, 1024, 1024, 1)
 """
 
 import argparse

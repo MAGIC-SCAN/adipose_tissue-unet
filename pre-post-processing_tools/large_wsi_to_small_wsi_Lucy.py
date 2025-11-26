@@ -6,6 +6,46 @@ This version preserves the original behavior:
   • Uses 2048 px tiles with 204 px overlap (stride = 1844 px).
   • Finds the largest grid (5×5 down to 2×2) that meets dimension/file-size limits.
   • Saves tiles next to the source image using the same format by default.
+
+USAGE EXAMPLES:
+
+1. Basic tiling with defaults (2048×2048 tiles, 204px overlap):
+   python pre-post-processing_tools/large_wsi_to_small_wsi_Lucy.py \
+     --input-dir /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane/raw_WSI \
+     --output-dir /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane/Pseudocolored
+
+2. Process with dry-run to preview (no files written):
+   python pre-post-processing_tools/large_wsi_to_small_wsi_Lucy.py \
+     --input-dir data/raw_WSI \
+     --output-dir data/tiles \
+     --dry-run
+
+3. Custom grid preferences (try 4×4 first, then 3×3, 2×2):
+   python pre-post-processing_tools/large_wsi_to_small_wsi_Lucy.py \
+     --input-dir data/raw_WSI \
+     --output-dir data/tiles \
+     --preferred-grids 4 3 2
+
+4. Override output format to PNG:
+   python pre-post-processing_tools/large_wsi_to_small_wsi_Lucy.py \
+     --input-dir data/raw_WSI \
+     --output-dir data/tiles \
+     --output-format png
+
+5. Adjust file size and dimension limits:
+   python pre-post-processing_tools/large_wsi_to_small_wsi_Lucy.py \
+     --input-dir data/raw_WSI \
+     --output-dir data/tiles \
+     --max-file-size-mb 20 \
+     --max-dimension-px 15000
+
+OUTPUT NAMING:
+  Input:  Meat_11_13.tif
+  Output: Meat_11_13_grid_4x4_tile_01.tif
+          Meat_11_13_grid_4x4_tile_02.tif
+          ...
+
+NOTE: For newer MS data (ECM channel), use large_wsi_to_small_wsi_MS.py instead.
 """
 
 from dataclasses import dataclass

@@ -6,11 +6,49 @@ Resamples ECM channel images to match the exact dimensions of corresponding
 Pseudocolored reference images. This ensures pixel-perfect alignment for
 mask transfer between modalities.
 
-Usage:
-    python ECM_scaling.py \
-        --reference-dir /path/to/Pseudocolored \
-        --target-dir /path/to/ECM_channel \
-        --output-dir /path/to/ECM_channel/resampled
+USAGE EXAMPLES:
+
+1. Basic resampling (match ECM to Pseudocolored dimensions):
+   python pre-post-processing_tools/ECM_scaling.py \
+     --reference-dir /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane/Pseudocolored \
+     --target-dir /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane/ECM_channel \
+     --output-dir /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane/ECM_channel/resampled
+
+2. Custom interpolation method (bicubic for smoother results):
+   python pre-post-processing_tools/ECM_scaling.py \
+     --reference-dir data/Meat_Luci_Tulane/Pseudocolored \
+     --target-dir data/Meat_MS_Tulane/ECM_channel \
+     --output-dir data/Meat_MS_Tulane/ECM_channel/resampled \
+     --interpolation bicubic
+
+3. Nearest neighbor (preserves exact pixel values, good for masks):
+   python pre-post-processing_tools/ECM_scaling.py \
+     --reference-dir data/Meat_Luci_Tulane/Pseudocolored \
+     --target-dir data/Meat_MS_Tulane/ECM_channel \
+     --output-dir data/Meat_MS_Tulane/ECM_channel/resampled \
+     --interpolation nearest
+
+4. Dry run (preview scaling without saving):
+   python pre-post-processing_tools/ECM_scaling.py \
+     --reference-dir data/Meat_Luci_Tulane/Pseudocolored \
+     --target-dir data/Meat_MS_Tulane/ECM_channel \
+     --output-dir data/Meat_MS_Tulane/ECM_channel/resampled \
+     --dry-run
+
+INTERPOLATION METHODS:
+  - bilinear: Default, good balance (PIL.BILINEAR)
+  - bicubic: Smoother, slower (PIL.BICUBIC)
+  - nearest: Preserves exact values, fastest (PIL.NEAREST)
+  - lanczos: Highest quality, slowest (PIL.LANCZOS)
+
+OUTPUT:
+  - Resampled ECM images matching reference dimensions
+  - Preserves original format (TIFF → TIFF, PNG → PNG, etc.)
+  - Maintains stem names for easy matching
+
+USE CASE:
+  Transfer fat annotations from Pseudocolored images to ECM channel by ensuring
+  both modalities have identical pixel dimensions.
 """
 
 import argparse
