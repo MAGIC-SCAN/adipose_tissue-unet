@@ -8,11 +8,21 @@ Matches the preprocessing pipeline from train_adipose_classifier_v0.py:
 
 Supports both RGB and grayscale modes to test which performs better.
 
+IMPORTANT - WEIGHTS FILE:
+  This script requires weights-only files (.weights.h5) from training.
+  The model architecture is rebuilt programmatically, then weights are loaded.
+  
+  Expected checkpoint structure:
+    checkpoints/classifier_YYYYMMDD_HHMMSS/
+    ├── best.weights.h5          # Use this file
+    ├── weights_best.weights.h5  # Or this file
+    └── training_settings.json   # Contains dropout rate (default: 0.4)
+
 USAGE EXAMPLES:
 
 1. Batch inference on directory (grayscale mode, no percentile norm):
    python Classification/classification_inference.py \
-     --weights checkpoints/classification/*/weights_best.weights.h5 \
+     --weights checkpoints/classification/*/best.weights.h5 \
      --input-dir data/Meat_MS_Tulane/ECM_channel \
      --output-csv predictions.csv \
      --mode grayscale \
@@ -20,7 +30,7 @@ USAGE EXAMPLES:
 
 2. Single tile inference with TTA:
    python Classification/classification_inference.py \
-     --weights checkpoints/classification/*/weights_best.weights.h5 \
+     --weights checkpoints/classification/*/best.weights.h5 \
      --input-tile path/to/tile.jpg \
      --mode grayscale \
      --percentile-norm false \
@@ -28,7 +38,7 @@ USAGE EXAMPLES:
 
 3. RGB mode with percentile normalization:
    python Classification/classification_inference.py \
-     --weights checkpoints/classification/*_percentile/weights_best.weights.h5 \
+     --weights checkpoints/classification/*_percentile/best.weights.h5 \
      --input-dir data/tiles/ \
      --output-csv predictions.csv \
      --mode rgb \
@@ -55,6 +65,7 @@ NOTES:
   - Use --mode grayscale for ECM channel data
   - Use --mode rgb for pseudocolored data
   - TTA modes: none, basic (4x), full (8x)
+  - Match --dropout to training settings (default: 0.4)
 """
 
 from __future__ import annotations
@@ -560,16 +571,34 @@ def main():
         
         # Load weights
         print(f"Loading weights from {weights_path}...")
-        try:
-            model.load_weights(str(weights_path))
-            print("✓ Weights loaded successfully")
-        except Exception as e:
-            print(f"Error loading weights: {e}")
-            print("\nTrying alternative loading method...")
-            # Try loading as full model
-            from tensorflow.keras.models import load_model
-            model = load_model(str(weights_path), compile=False)
-            print("✓ Loaded as full model")
+        
+        # Check if weights-only file (.weights.h5) or full model (.h5)
+        if '.weights.h5' in str(weights_path) or 'weights_best' in str(weights_path):
+            # Weights-only file - use load_weights()
+            try:
+                model.load_weights(str(weights_path))
+                print("✓ Weights loaded successfully (weights-only file)")
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to load weights from {weights_path}.\n"
+                    f"Error: {e}\n\n"
+                    f"This is a weights-only file (.weights.h5). Make sure:\n"
+                    f"1. The model architecture matches training (dropout={args.dropout})\n"
+                    f"2. The file is not corrupted\n"
+                    f"3. TensorFlow version matches training environment (2.13.x)"
+                )
+        else:
+            # Try loading as full model (.h5 or SavedModel)
+            try:
+                from tensorflow.keras.models import load_model
+                model = load_model(str(weights_path), compile=False)
+                print("✓ Loaded as full model")
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to load model from {weights_path}.\n"
+                    f"Error: {e}\n\n"
+                    f"If this is a weights-only file, rename it to include '.weights.h5'"
+                )
     
     # Run inference
     print("\nRunning inference...")
