@@ -12,7 +12,7 @@ Dual-model deep learning pipeline for automated adipose tissue detection and seg
 
 ## 🎯 Project Goal
 
-Automated analysis of adipose tissue in meat samples using **SYBR Gold + Eosin** or **ECM channel** fluorescent staining. The dual-model pipeline first classifies tiles as adipose/non-adipose, then performs detailed pixel-level segmentation for quantitative morphology analysis.
+Automated analysis of adipose tissue in meat samples using **SYBR Gold + Eosin** fluorescent staining. Analysis is done either using or **ECM channel** or **Pseudocolored** combinations of nuclear channel and ECM channel. The dual-model pipeline first classifies tiles as adipose/non-adipose, then performs detailed pixel-level segmentation for quantitative morphology analysis.
 
 **Key Applications:**
 - Adipose tissue distribution mapping in meat samples
@@ -34,7 +34,7 @@ Automated analysis of adipose tissue in meat samples using **SYBR Gold + Eosin**
 
 ### 🔄 In Progress
 - Training U-Net segmentation on latest dataset with 75% tile overlap
-- Training InceptionV3 classifier on Luci ECM dataset with 50% overlap
+- Training InceptionV3 classifier on Luci ECM dataset with 50% overlap (pending dataset creation)
 - Training InceptionV3 classifier on MS ECM dataset (pending dataset creation)
 - Hyperparameter optimization and cross-validation
 
