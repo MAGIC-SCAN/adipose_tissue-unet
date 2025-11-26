@@ -248,6 +248,43 @@ def build_model(dropout_rate: float = 0.4) -> Model:
     return model
 
 
+def diagnose_weights_file(weights_path: Path) -> None:
+    """
+    Diagnose weights file to check if it's valid.
+    
+    Args:
+        weights_path: Path to weights file
+    """
+    try:
+        import h5py
+        print(f"\n[Diagnosis] Inspecting weights file: {weights_path}")
+        print(f"[Diagnosis] File size: {weights_path.stat().st_size / (1024*1024):.2f} MB")
+        
+        with h5py.File(str(weights_path), 'r') as f:
+            # Check file structure
+            print(f"[Diagnosis] HDF5 keys: {list(f.keys())}")
+            
+            # For weights-only files, expect a layer_names attribute
+            if 'layer_names' in f.attrs:
+                layer_names = [name.decode('utf-8') if isinstance(name, bytes) else name 
+                              for name in f.attrs['layer_names']]
+                print(f"[Diagnosis] Found {len(layer_names)} layers")
+                print(f"[Diagnosis] First few layers: {layer_names[:5]}")
+            else:
+                print("[Diagnosis] WARNING: 'layer_names' attribute not found")
+            
+            # Check if this is a full model (has 'model_weights' group)
+            if 'model_weights' in f.keys():
+                print("[Diagnosis] This appears to be a full model file (.h5)")
+                print("[Diagnosis] Suggestion: Use load_model() instead of load_weights()")
+            else:
+                print("[Diagnosis] This appears to be a weights-only file")
+                
+    except Exception as e:
+        print(f"[Diagnosis] Error inspecting file: {e}")
+        print(f"[Diagnosis] The file may be corrupted or in an unexpected format")
+
+
 def load_and_preprocess_image(
     image_path: Path,
     use_grayscale: bool = True
@@ -579,13 +616,23 @@ def main():
                 model.load_weights(str(weights_path))
                 print("✓ Weights loaded successfully (weights-only file)")
             except Exception as e:
+                # Run diagnostics
+                print(f"\n❌ Error loading weights: {e}")
+                diagnose_weights_file(weights_path)
+                
                 raise ValueError(
-                    f"Failed to load weights from {weights_path}.\n"
+                    f"\nFailed to load weights from {weights_path}.\n"
                     f"Error: {e}\n\n"
-                    f"This is a weights-only file (.weights.h5). Make sure:\n"
-                    f"1. The model architecture matches training (dropout={args.dropout})\n"
-                    f"2. The file is not corrupted\n"
-                    f"3. TensorFlow version matches training environment (2.13.x)"
+                    f"Possible causes:\n"
+                    f"1. File may be corrupted (incomplete download/transfer)\n"
+                    f"2. File was saved with a different TensorFlow/Keras version\n"
+                    f"3. File might be a full model (.h5) but named .weights.h5\n"
+                    f"4. Model architecture doesn't match (dropout={args.dropout})\n\n"
+                    f"Solutions:\n"
+                    f"- Verify file integrity (check file size matches source)\n"
+                    f"- Re-download or re-copy the weights file\n"
+                    f"- Ensure TensorFlow 2.13.x is installed\n"
+                    f"- Try using the original checkpoint from training"
                 )
         else:
             # Try loading as full model (.h5 or SavedModel)
