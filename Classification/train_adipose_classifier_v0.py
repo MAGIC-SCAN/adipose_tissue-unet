@@ -4,6 +4,51 @@ Tile-level adipose classifier training.
 
 Uses grayscale tiles from build_class_dataset.py, resizes to 299x299, and fine-tunes
 an InceptionV3 head with transfer learning from legacy checkpoints.
+
+USAGE EXAMPLES:
+
+1. Train on ECM channel (no percentile normalization):
+   python Classification/train_adipose_classifier_v0.py \
+     --dataset-root /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane/_build_class_ecm_MS_20251125_132912 \
+     --percentile-norm false \
+     --warmup-epochs 6 \
+     --finetune-epochs 20
+
+2. Train with percentile normalization (for contrast enhancement):
+   python Classification/train_adipose_classifier_v0.py \
+     --dataset-root /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane/_build_class_20251120_143052 \
+     --percentile-norm true \
+     --percentile-low 1.0 \
+     --percentile-high 99.0
+
+3. Transfer learning from adipocyte detector (default):
+   python Classification/train_adipose_classifier_v0.py \
+     --dataset-root /path/to/_build_class_* \
+     --percentile-norm false \
+     --pretrained-weights /home/luci/adipose_tissue-unet/checkpoints/classifier_runs/tile_classifier_InceptionV3/tile_adipocyte.weights.h5
+
+4. Train from ImageNet only (no task-specific transfer):
+   python Classification/train_adipose_classifier_v0.py \
+     --dataset-root /path/to/_build_class_* \
+     --percentile-norm false \
+     --pretrained-weights ""
+
+5. Extended training with custom learning rates:
+   python Classification/train_adipose_classifier_v0.py \
+     --dataset-root /path/to/_build_class_* \
+     --percentile-norm false \
+     --warmup-epochs 10 \
+     --finetune-epochs 30 \
+     --base-lr 1e-3 \
+     --finetune-lr 5e-5
+
+OUTPUT STRUCTURE:
+  checkpoints/classification/
+    └── YYYYMMDD_HHMMSS_classifier_ecm_MS_adipose_sybreosin[_percentile]/
+        ├── weights_best.weights.h5   # Best checkpoint (val_auc)
+        ├── weights_final.weights.h5  # Final checkpoint
+        ├── training.log              # CSV training metrics
+        └── config.json               # Training hyperparameters
 """
 
 from __future__ import annotations

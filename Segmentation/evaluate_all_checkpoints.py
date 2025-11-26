@@ -10,9 +10,42 @@ Key Features:
 - Robust error handling
 - Automatically generates comparison plots via visualize_checkpoint_metrics.py
 
-Usage:
-    python evaluate_all_checkpoints.py --clean-test --stain --use-tta --tta-mode basic
-    python evaluate_all_checkpoints.py --clean-test --original --parallel
+USAGE EXAMPLES:
+
+1. Evaluate all checkpoints on clean test set:
+   python Segmentation/evaluate_all_checkpoints.py \
+     --clean-test --stain
+
+2. Evaluate with TTA (basic 4x augmentation):
+   python Segmentation/evaluate_all_checkpoints.py \
+     --clean-test --stain \
+     --use-tta --tta-mode basic
+
+3. Evaluate with full TTA (8x augmentation):
+   python Segmentation/evaluate_all_checkpoints.py \
+     --clean-test --stain \
+     --use-tta --tta-mode full
+
+4. Parallel evaluation (faster on multi-core systems):
+   python Segmentation/evaluate_all_checkpoints.py \
+     --clean-test --stain \
+     --parallel --max-workers 4
+
+5. Evaluate specific checkpoints directory:
+   python Segmentation/evaluate_all_checkpoints.py \
+     --checkpoints-dir /path/to/custom/checkpoints \
+     --clean-test --stain \
+     --use-tta --tta-mode full
+
+6. Evaluate on original test set (no stain normalization):
+   python Segmentation/evaluate_all_checkpoints.py \
+     --clean-test --original
+
+OUTPUT:
+  - Evaluation results for each checkpoint in its evaluation/ subdirectory
+  - Comparative plots in model_comparison_plots/
+  - Summary CSV with all checkpoint metrics
+  - Execution log with timing and error information
 """
 
 import os

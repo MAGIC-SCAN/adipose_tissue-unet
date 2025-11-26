@@ -12,6 +12,44 @@ Key Features:
 - Per-slide metrics computation
 - Overlay and comparison visualizations
 
+USAGE EXAMPLES:
+
+1. Basic reconstruction (Gaussian blending):
+   python Segmentation/reconstruct_full_images.py \
+     --weights checkpoints/20251104_152203_adipose_sybreosin_1024_finetune/weights_best_overall.weights.h5 \
+     --data-root /path/to/clean_test_50_overlap \
+     --output-dir reconstructed_images
+
+2. Reconstruction with TTA:
+   python Segmentation/reconstruct_full_images.py \
+     --weights checkpoints/latest/weights_best_overall.weights.h5 \
+     --data-root /path/to/clean_test_50_overlap \
+     --output-dir reconstructed_tta \
+     --use-tta --tta-mode full
+
+3. Reconstruction with boundary refinement:
+   python Segmentation/reconstruct_full_images.py \
+     --weights checkpoints/latest/weights_best_overall.weights.h5 \
+     --data-root /path/to/clean_test_50_overlap \
+     --output-dir reconstructed_refined \
+     --boundary-refine
+
+4. Full reconstruction pipeline:
+   python Segmentation/reconstruct_full_images.py \
+     --weights checkpoints/latest/weights_best_overall.weights.h5 \
+     --data-root /path/to/clean_test_50_overlap \
+     --output-dir reconstructed_full \
+     --use-tta --tta-mode full \
+     --boundary-refine \
+     --blend-mode gaussian
+
+5. Linear blending (faster, slightly lower quality):
+   python Segmentation/reconstruct_full_images.py \
+     --weights checkpoints/latest/weights_best_overall.weights.h5 \
+     --data-root /path/to/clean_test_50_overlap \
+     --output-dir reconstructed_linear \
+     --blend-mode linear
+
 Output Structure:
     output_dir/
     ├── masks/           # Full reconstructed prediction masks (TIFF)
@@ -21,7 +59,7 @@ Output Structure:
     │   └── summary.csv  # Aggregated metrics
     └── reconstruction_log.json
 
-Usage:
+Usage (Legacy Format):
     # Basic reconstruction
     python reconstruct_full_images.py \
         --weights checkpoints/best.h5 \

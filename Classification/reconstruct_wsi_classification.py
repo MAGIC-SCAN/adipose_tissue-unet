@@ -4,7 +4,63 @@ Reconstruct WSI with classification overlay from evaluation results.
 
 Reads predictions.csv from eval_adipose_classifier.py and creates visualization
 overlays showing True Positives (green), False Positives (red), False Negatives (orange),
-and True Negatives (light blue) on the original WSI.
+and True Negatives (cyan) on the original WSI.
+
+COLOR SCHEME:
+  - Green:  True Positive (TP) - Correctly detected adipose
+  - Red:    False Positive (FP) - Incorrectly detected as adipose
+  - Orange: False Negative (FN) - Missed adipose tissue
+  - Cyan:   True Negative (TN) - Correctly rejected non-adipose
+
+COMBINING PRIORITY (when --combine-patches > 1):
+  1. TP trumps all (if any TP in block → green)
+  2. TN is second priority (if no TP but any TN → cyan)
+  3. FP > FN (prefer showing false alarms over misses)
+
+USAGE EXAMPLES:
+
+1. Reconstruct with 3×3 patch combining (default, 8x downsampling):
+   python Classification/reconstruct_wsi_classification.py \
+     --predictions-csv checkpoints/classification/*/evaluation/ecm_2_test/predictions.csv \
+     --metrics-json checkpoints/classification/*/evaluation/ecm_2_test/metrics.json \
+     --wsi-dir /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane/WSI/ECM_channel \
+     --tiles-dir /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane/ECM_channel \
+     --output-dir checkpoints/classification/*/evaluation/ecm_2_test/wsi_reconstructions
+
+2. No patch combining (show every tile individually):
+   python Classification/reconstruct_wsi_classification.py \
+     --predictions-csv checkpoints/classification/*/evaluation/*/predictions.csv \
+     --metrics-json checkpoints/classification/*/evaluation/*/metrics.json \
+     --wsi-dir data/Meat_MS_Tulane/WSI/ECM_channel \
+     --tiles-dir data/Meat_MS_Tulane/ECM_channel \
+     --output-dir output/wsi_reconstructions \
+     --combine-patches 1
+
+3. Full resolution output (no downsampling):
+   python Classification/reconstruct_wsi_classification.py \
+     --predictions-csv checkpoints/*/evaluation/*/predictions.csv \
+     --metrics-json checkpoints/*/evaluation/*/metrics.json \
+     --wsi-dir data/Meat_MS_Tulane/WSI/ECM_channel \
+     --tiles-dir data/Meat_MS_Tulane/ECM_channel \
+     --output-dir output/full_res \
+     --downsample 1 \
+     --save-original
+
+4. Custom threshold and transparency:
+   python Classification/reconstruct_wsi_classification.py \
+     --predictions-csv checkpoints/*/evaluation/*/predictions.csv \
+     --metrics-json checkpoints/*/evaluation/*/metrics.json \
+     --wsi-dir data/Meat_MS_Tulane/WSI/ECM_channel \
+     --tiles-dir data/Meat_MS_Tulane/ECM_channel \
+     --output-dir output/custom \
+     --threshold 0.35 \
+     --overlay-alpha 0.5
+
+OUTPUT STRUCTURE:
+  output_dir/
+    ├── Meat_11_13_S5_2_overlay.png    # WSI with colored overlay + legend
+    ├── Meat_11_13_S5_2_stats.json     # Statistics (TP/FP/FN/TN counts)
+    └── Meat_11_13_S5_2_original.png   # Original WSI (if --save-original)
 """
 
 from __future__ import annotations
@@ -50,12 +106,12 @@ def parse_args() -> argparse.Namespace:
                         help="Opacity of overlay rectangles (0=transparent, 1=opaque)")
     parser.add_argument("--tile-size", type=int, default=1024,
                         help="Size of classification tiles (patches)")
-    parser.add_argument("--combine-patches", type=int, default=1,
+    parser.add_argument("--combine-patches", type=int, default=3,
                         help="Combine N×N patches into single overlay block (1=no combining, 2=2×2, etc.)")
-    parser.add_argument("--save-original", action="store_true", default=True,
-                        help="Save original WSI as PNG (enabled by default)")
+    parser.add_argument("--save-original", action="store_true", default=False,
+                        help="Save original WSI as PNG")
     parser.add_argument("--no-save-original", dest="save_original", action="store_false",
-                        help="Don't save original WSI")
+                        help="Don't save original WSI (default)")
     parser.add_argument("--downsample", type=int, default=8,
                         help="Downsample factor for output images (1=full resolution, 2=half, 4=quarter, 8=eighth)")
     return parser.parse_args()
@@ -64,8 +120,8 @@ def parse_args() -> argparse.Namespace:
 # Color scheme (RGB format)
 COLORS = {
     "TP": (0, 255, 0),      # Green - True Positive (correctly detected adipose)
-    "FP": (255, 0, 0),      # Red - False Positive (incorrectly detected as adipose)
-    "FN": (255, 140, 0),    # Orange - False Negative (missed adipose)
+    "FP": (255, 0, 0),      # Bright Red - False Positive (incorrectly detected as adipose)
+    "FN": (255, 165, 0),    # Bright Orange - False Negative (missed adipose)
     "TN": (0, 255, 255),    # Cyan - True Negative (correctly rejected)
 }
 

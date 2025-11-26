@@ -7,6 +7,54 @@ Matches the preprocessing pipeline from train_adipose_classifier_v0.py:
 - (optionally tile to 3 channels if grayscale) → preprocess_input → predict
 
 Supports both RGB and grayscale modes to test which performs better.
+
+USAGE EXAMPLES:
+
+1. Batch inference on directory (grayscale mode, no percentile norm):
+   python Classification/classification_inference.py \
+     --weights checkpoints/classification/*/weights_best.weights.h5 \
+     --input-dir data/Meat_MS_Tulane/ECM_channel \
+     --output-csv predictions.csv \
+     --mode grayscale \
+     --percentile-norm false
+
+2. Single tile inference with TTA:
+   python Classification/classification_inference.py \
+     --weights checkpoints/classification/*/weights_best.weights.h5 \
+     --input-tile path/to/tile.jpg \
+     --mode grayscale \
+     --percentile-norm false \
+     --tta-mode full
+
+3. RGB mode with percentile normalization:
+   python Classification/classification_inference.py \
+     --weights checkpoints/classification/*_percentile/weights_best.weights.h5 \
+     --input-dir data/tiles/ \
+     --output-csv predictions.csv \
+     --mode rgb \
+     --percentile-norm true \
+     --percentile-low 1.0 \
+     --percentile-high 99.0
+
+4. ONNX inference (faster, requires ONNX export):
+   python Classification/classification_inference.py \
+     --onnx-model model.onnx \
+     --input-dir data/tiles/ \
+     --output-csv predictions.csv \
+     --mode grayscale \
+     --percentile-norm false
+
+OUTPUT CSV FORMAT:
+  path,probability,prediction
+  tile_001.jpg,0.8523,1
+  tile_002.jpg,0.1234,0
+  ...
+
+NOTES:
+  - Always match --percentile-norm to training settings
+  - Use --mode grayscale for ECM channel data
+  - Use --mode rgb for pseudocolored data
+  - TTA modes: none, basic (4x), full (8x)
 """
 
 from __future__ import annotations

@@ -14,15 +14,52 @@ FEATURES:
 - Sliding window inference with Gaussian blending (configurable overlap)
 - Morphological boundary refinement (bilateral filtering + morphology)
 
-Usage:
-    # All enhancements enabled
-    python full_evaluation_enhanced.py \
-        --weights checkpoints/best/phase_best.weights.h5 \
-        --clean-test --stain \
-        --use-tta --tta-mode full \
-        --sliding-window --overlap 0.5 \
-        --boundary-refine \
-        --adaptive-threshold
+USAGE EXAMPLES:
+
+1. Standard evaluation (clean test set with stain normalization):
+   python Segmentation/full_evaluation_enhanced.py \
+     --weights checkpoints/20251104_152203_adipose_sybreosin_1024_finetune/weights_best_overall.weights.h5 \
+     --clean-test --stain
+
+2. Evaluation with TTA (8x augmentation ensemble):
+   python Segmentation/full_evaluation_enhanced.py \
+     --weights checkpoints/latest/weights_best_overall.weights.h5 \
+     --clean-test --stain \
+     --use-tta --tta-mode full
+
+3. Evaluation with sliding window inference:
+   python Segmentation/full_evaluation_enhanced.py \
+     --weights checkpoints/latest/weights_best_overall.weights.h5 \
+     --clean-test --stain \
+     --sliding-window --overlap 0.5
+
+4. Full evaluation with all enhancements:
+   python Segmentation/full_evaluation_enhanced.py \
+     --weights checkpoints/latest/weights_best_overall.weights.h5 \
+     --clean-test --stain \
+     --use-tta --tta-mode full \
+     --sliding-window --overlap 0.5 \
+     --boundary-refine \
+     --adaptive-threshold
+
+5. Evaluate on original test set (no stain normalization):
+   python Segmentation/full_evaluation_enhanced.py \
+     --weights checkpoints/latest/weights_best_overall.weights.h5 \
+     --clean-test --original
+
+6. Custom data root evaluation:
+   python Segmentation/full_evaluation_enhanced.py \
+     --weights checkpoints/latest/weights_best_overall.weights.h5 \
+     --data-root /path/to/custom_build/dataset/test \
+     --use-tta --tta-mode basic
+
+OUTPUT FILES:
+  - evaluation_results.json       # All metrics with confidence intervals
+  - per_slide_metrics.csv         # Slide-level breakdown
+  - confusion_matrix.png          # Visual confusion matrix
+  - error_analysis.json           # TP/FP/FN analysis
+  - predictions/                  # Saved prediction masks
+  - overlays/                     # Predictions overlaid on images
 """
 
 import os

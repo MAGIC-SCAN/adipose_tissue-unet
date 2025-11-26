@@ -5,6 +5,60 @@ Evaluation script for the adipose tile classifier.
 Loads a trained checkpoint, runs inference on the test split of a Keras-style dataset,
 optionally applies geometric TTA, and reports publication-ready metrics (ROC/PR AUC,
 confusion matrices at default + optimized thresholds, F1/precision/recall, etc.).
+
+USAGE EXAMPLES:
+
+1. Evaluate on test set (no TTA, no percentile normalization):
+   python Classification/eval_adipose_classifier.py \
+     --weights /home/luci/adipose_tissue-unet/checkpoints/classification/20251125_132912_classifier_ecm_adipose_sybreosin/weights_best.weights.h5 \
+     --test-root /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane/_test/ecm_2_test \
+     --percentile-norm false
+
+2. Evaluate with full TTA (8x augmentation ensemble):
+   python Classification/eval_adipose_classifier.py \
+     --weights checkpoints/classification/*/weights_best.weights.h5 \
+     --test-root data/Meat_MS_Tulane/_test/ecm_2_test \
+     --percentile-norm false \
+     --tta-mode full
+
+3. Evaluate with percentile normalization (must match training):
+   python Classification/eval_adipose_classifier.py \
+     --weights checkpoints/classification/*_percentile/weights_best.weights.h5 \
+     --test-root data/Meat_Luci_Tulane/_build_class_*/test \
+     --percentile-norm true \
+     --percentile-low 1.0 \
+     --percentile-high 99.0
+
+4. Save example predictions for qualitative analysis:
+   python Classification/eval_adipose_classifier.py \
+     --weights checkpoints/classification/*/weights_best.weights.h5 \
+     --test-root data/Meat_MS_Tulane/_test/ecm_2_test \
+     --percentile-norm false \
+     --save-examples 50
+
+5. Custom test directory structure (adipose/ and not_adipose/ folders):
+   python Classification/eval_adipose_classifier.py \
+     --weights checkpoints/classification/*/weights_best.weights.h5 \
+     --test-root /path/to/custom_test_dir \
+     --percentile-norm false \
+     --tta-mode basic
+
+OUTPUT STRUCTURE:
+  checkpoints/classification/YYYYMMDD_*_classifier_*/
+    └── evaluation/
+        └── ecm_2_test/  # Named after test directory
+            ├── metrics.json           # All metrics (AUC, F1, precision, recall, etc.)
+            ├── predictions.csv        # Per-tile predictions with probabilities
+            ├── roc_curve.png          # ROC curve plot
+            ├── pr_curve.png           # Precision-Recall curve
+            ├── confusion_matrix.png   # Confusion matrix at best F1 threshold
+            ├── prob_histograms.png    # Probability distribution by class
+            ├── calibration_plot.png   # Calibration curve
+            └── examples/              # Sample predictions (if --save-examples > 0)
+                ├── TP/  # True positives
+                ├── FP/  # False positives
+                ├── FN/  # False negatives
+                └── TN/  # True negatives
 """
 
 from __future__ import annotations

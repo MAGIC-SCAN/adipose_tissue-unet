@@ -14,12 +14,52 @@ target_folder/
     ├── tiles/           # All tiles by category (tissue/blurry/empty)
     └── tiles_masks/     # All mask tiles (before final filtering)
 
-Usage:
-python build_test_dataset.py \
-    --images-dir /path/to/pseudocolored/images \
-    --masks-dir /path/to/json/masks \
-    --output-dir /path/to/target/folder \
-    --target-mask fat
+USAGE EXAMPLES:
+
+1. Build test set with stain normalization:
+   python Segmentation/build_test_dataset.py \
+     --images-dir /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane/Pseudocolored/test \
+     --masks-dir /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane/Masks/fat/test \
+     --output-dir /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane/_test/clean_test \
+     --target-mask fat \
+     --stain-normalize
+
+2. Build test set without stain normalization (ECM channel):
+   python Segmentation/build_test_dataset.py \
+     --images-dir /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane/ECM_channel \
+     --masks-dir /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane/Masks/fat \
+     --output-dir /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane/_test/ecm_test \
+     --target-mask fat \
+     --no-stain-normalize
+
+3. Build with bubble subtraction:
+   python Segmentation/build_test_dataset.py \
+     --images-dir data/Meat_Luci_Tulane/Pseudocolored/test \
+     --masks-dir data/Meat_Luci_Tulane/Masks/fat/test \
+     --output-dir data/Meat_Luci_Tulane/_test/clean_test_no_bubbles \
+     --target-mask fat \
+     --subtract --subtract-class bubbles \
+     --stain-normalize
+
+4. Custom tile size and quality thresholds:
+   python Segmentation/build_test_dataset.py \
+     --images-dir data/Meat_Luci_Tulane/Pseudocolored/test \
+     --masks-dir data/Meat_Luci_Tulane/Masks/fat/test \
+     --output-dir data/Meat_Luci_Tulane/_test/custom \
+     --target-mask fat \
+     --tile-size 512 \
+     --min-mask-ratio 0.10 \
+     --blurry-threshold 60.0 \
+     --stain-normalize
+
+OUTPUT STRUCTURE:
+  target_folder/
+    ├── images/            # Test image tiles (JPEG)
+    ├── masks/             # Test mask tiles (TIFF)
+    └── build/
+        ├── masks/         # Full-image binary masks
+        ├── tiles/         # Categorized tiles (tissue/blurry/empty)
+        └── tiles_masks/   # Mask tiles before filtering
 """
 
 import os

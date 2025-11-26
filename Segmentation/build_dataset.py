@@ -21,8 +21,62 @@ What it does (in order):
   5) Tile pseudocolored images and aligned target masks with filtering (empty/blur/min mask ratio).
   6) Split tiles into train/val/test sets (default: 60%/20%/20%).
 
-CLI Examples
-------------
+USAGE EXAMPLES:
+
+1. Standard build (fat - bubbles, with stain normalization):
+   python Segmentation/build_dataset.py \
+     --data-root /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane \
+     --stain-normalize \
+     --target-mask fat --subtract --subtract-class bubbles \
+     --min-mask-ratio 0.05 \
+     --workers 8
+
+2. Build without stain normalization (ECM channel):
+   python Segmentation/build_dataset.py \
+     --data-root /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane \
+     --no-stain-normalize \
+     --target-mask fat --subtract --subtract-class bubbles
+
+3. Quick build without overlays (faster):
+   python Segmentation/build_dataset.py \
+     --data-root /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane \
+     --stain-normalize \
+     --target-mask fat --subtract --subtract-class bubbles \
+     --no-overlays \
+     --workers 12
+
+4. Bubbles-only dataset (no subtraction):
+   python Segmentation/build_dataset.py \
+     --data-root /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane \
+     --stain-normalize \
+     --target-mask bubbles --no-subtract
+
+5. Custom tile size and splits:
+   python Segmentation/build_dataset.py \
+     --data-root /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane \
+     --stain-normalize \
+     --target-mask fat --subtract --subtract-class bubbles \
+     --tile-size 512 \
+     --train-split 0.70 --val-split 0.15 --test-split 0.15
+
+OUTPUT STRUCTURE:
+  data/Meat_Luci_Tulane/
+    └── _build_YYYYMMDD_HHMMSS/
+        ├── dataset/
+        │   ├── train/
+        │   │   ├── images/        # JPEG tiles (60%)
+        │   │   └── masks/         # Binary TIFF masks (60%)
+        │   ├── val/               # 20% split
+        │   └── test/              # 20% split
+        ├── masks/                 # Full-image binary masks
+        │   ├── fat/
+        │   ├── bubbles/
+        │   └── muscle/
+        ├── overlays/              # QA visualizations (optional)
+        └── build_summary.json     # Build statistics and parameters
+
+CLI Examples (Legacy Format)
+-----------------------------
 # End-to-end build using fat as training target, subtract bubbles, create overlays
 python build_fat_dataset.py --target-mask fat --subtract --subtract-class bubbles --make-masks --make-overlays
 

@@ -5,21 +5,51 @@ Segmentation Inference Script for Adipose U-Net
 Run inference on a folder of images without requiring ground truth masks.
 Saves prediction masks and optional overlay visualizations.
 
-Usage:
-    # Basic inference
-    python segmentation_inference.py \
-        --images-dir /path/to/images \
-        --output-dir /path/to/output \
-        --weights checkpoints/model/weights.h5
+USAGE EXAMPLES:
 
-    # With TTA and overlays
-    python segmentation_inference.py \
-        --images-dir /path/to/images \
-        --output-dir /path/to/output \
-        --weights checkpoints/model \
-        --use-tta --tta-mode full \
-        --threshold 0.6 \
-        --save-overlays
+1. Basic inference (single folder):
+   python Segmentation/segmentation_inference.py \
+     --images-dir /path/to/images \
+     --output-dir /path/to/output \
+     --weights checkpoints/20251104_152203_adipose_sybreosin_1024_finetune/weights_best_overall.weights.h5
+
+2. Inference with TTA (8x augmentation ensemble):
+   python Segmentation/segmentation_inference.py \
+     --images-dir /path/to/images \
+     --output-dir /path/to/output \
+     --weights checkpoints/latest/weights_best_overall.weights.h5 \
+     --use-tta --tta-mode full
+
+3. Inference with overlays and custom threshold:
+   python Segmentation/segmentation_inference.py \
+     --images-dir /path/to/images \
+     --output-dir /path/to/output \
+     --weights checkpoints/latest/weights_best_overall.weights.h5 \
+     --threshold 0.6 \
+     --save-overlays
+
+4. Batch inference with sliding window:
+   python Segmentation/segmentation_inference.py \
+     --images-dir /path/to/images \
+     --output-dir /path/to/output \
+     --weights checkpoints/latest/weights_best_overall.weights.h5 \
+     --sliding-window --overlap 0.5 \
+     --save-overlays
+
+5. Full enhancement pipeline:
+   python Segmentation/segmentation_inference.py \
+     --images-dir /path/to/images \
+     --output-dir /path/to/output \
+     --weights checkpoints/latest/weights_best_overall.weights.h5 \
+     --use-tta --tta-mode full \
+     --sliding-window --overlap 0.5 \
+     --threshold 0.5 \
+     --save-overlays
+
+OUTPUT STRUCTURE:
+  output_dir/
+    ├── masks/           # Binary prediction masks (TIFF)
+    └── overlays/        # Predictions overlaid on images (PNG, if --save-overlays)
 """
 
 import os

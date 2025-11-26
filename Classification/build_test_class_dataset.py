@@ -4,6 +4,59 @@ Build a classifier-ready test dataset (adipose vs not-adipose).
 
 Adapts the tiling/mask pipeline from build_class_dataset.py but targets the
 /_test folder (e.g., clean_test_class) and keeps all tiles (no white/blurry filtering).
+
+Differences from build_class_dataset.py:
+  - No train/val/test split (all tiles in root adipose/not_adipose)
+  - Default: keep all tiles (trusts annotator judgment)
+  - Can include ambiguous tiles (0 < adipose_ratio < threshold)
+  - Designed for held-out test sets with manual annotations
+
+USAGE EXAMPLES:
+
+1. Build standard test set (excludes ambiguous, keeps all quality):
+   python Classification/build_test_class_dataset.py \
+     --images-dir /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane/ECM_channel \
+     --masks-dir /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane/Masks/fat \
+     --output-dir /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane/_test/ecm_2_test \
+     --stain-normalize false
+
+2. Include ambiguous tiles for edge case testing:
+   python Classification/build_test_class_dataset.py \
+     --images-dir data/Meat_MS_Tulane/ECM_channel \
+     --masks-dir data/Meat_MS_Tulane/Masks/fat \
+     --output-dir data/Meat_MS_Tulane/_test/ecm_2_all_annotations \
+     --stain-normalize false \
+     --include-ambiguous true \
+     --min-confidence 1
+
+3. Strict quality filtering (exclude white and blurry):
+   python Classification/build_test_class_dataset.py \
+     --images-dir data/Meat_MS_Tulane/ECM_channel \
+     --masks-dir data/Meat_MS_Tulane/Masks/fat \
+     --output-dir data/Meat_MS_Tulane/_test/ecm_2_strict \
+     --stain-normalize false \
+     --keep-white false \
+     --keep-blurry false \
+     --white-ratio-limit 0.70 \
+     --blurry-threshold 10.0
+
+4. High confidence annotations only:
+   python Classification/build_test_class_dataset.py \
+     --images-dir data/Meat_Luci_Tulane/Pseudocolored \
+     --masks-dir data/Meat_Luci_Tulane/Masks/fat \
+     --output-dir data/Meat_Luci_Tulane/_test/pseudocolored_high_conf \
+     --stain-normalize true \
+     --min-confidence 3
+
+OUTPUT STRUCTURE:
+  output_dir/
+    ├── adipose/              # Tiles with adipose >= threshold
+    │   └── *.jpg
+    ├── not_adipose/          # Tiles with adipose < threshold
+    │   └── *.jpg
+    ├── test_manifest.csv     # All tiles with metadata
+    ├── build_log.json        # Build parameters and statistics
+    └── build_summary.txt     # Human-readable summary
 """
 
 from __future__ import annotations

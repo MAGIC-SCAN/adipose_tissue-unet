@@ -6,6 +6,51 @@ The script mirrors key conveniences from build_dataset.py (timestamped builds,
 confidence filtering, white/blurry quality checks, optional stain normalization)
 but focuses on producing classification-ready JPEG tiles that can feed the
 cell_classifier training pipeline.
+
+USAGE EXAMPLES:
+
+1. Build ECM channel dataset (no stain normalization):
+   python Classification/build_class_dataset.py \
+     --data-root /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane \
+     --stain-normalize false \
+     --balance-classes true \
+     --adipose-ratio 0.50
+
+2. Build pseudocolored dataset with stain normalization:
+   python Classification/build_class_dataset.py \
+     --data-root /home/luci/adipose_tissue-unet/data/Meat_Luci_Tulane \
+     --stain-normalize true \
+     --balance-classes true \
+     --adipose-ratio 0.50
+
+3. Build with strict quality filtering:
+   python Classification/build_class_dataset.py \
+     --data-root /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane \
+     --stain-normalize false \
+     --white-ratio-limit 0.70 \
+     --blurry-threshold 10.0 \
+     --min-confidence 2
+
+4. Exclude test set duplicates automatically:
+   python Classification/build_class_dataset.py \
+     --data-root /home/luci/adipose_tissue-unet/data/Meat_MS_Tulane \
+     --stain-normalize false \
+     --exclude-test-duplicates true
+
+OUTPUT STRUCTURE:
+  data/Meat_MS_Tulane/
+    └── _build_class_ecm_MS_YYYYMMDD_HHMMSS/
+        ├── train/
+        │   ├── adipose/          # 60% of tiles with adipose >= threshold
+        │   └── not_adipose/      # 60% of tiles with adipose < threshold
+        ├── val/
+        │   ├── adipose/          # 20% of tiles
+        │   └── not_adipose/      # 20% of tiles
+        ├── test/
+        │   ├── adipose/          # 20% of tiles
+        │   └── not_adipose/      # 20% of tiles
+        ├── manifest.csv          # Full dataset catalog with metadata
+        └── build_log.json        # Build parameters and statistics
 """
 
 from __future__ import annotations
