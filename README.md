@@ -1,42 +1,47 @@
-# Adipose Tissue U-Net
+# Adipose Tissue Analysis Pipeline
 
-Deep learning pipeline for automated adipocyte (fat cell) segmentation from fluorescent histology images using U-Net architecture.
+Dual-model deep learning pipeline for automated adipose tissue detection and segmentation from fluorescent histology images.
 
-![Adipocyte Segmentation Overview](overview.png)
+**Architecture:**
+- **Classification**: InceptionV3 transfer learning for tile-level adipose detection
+- **Segmentation**: U-Net for pixel-level adipose tissue segmentation
+
+![Original Adipocyte Segmentation Overview](overview.png)
 
 ---
 
 ## 🎯 Project Goal
 
-Develop an automated pipeline for quantifying adipocyte morphology in meat tissue samples using **SYBR Gold + Eosin fluorescent staining**. The system segments individual fat cells from high-resolution histology images to enable large-scale analysis of meat quality characteristics.
+Automated analysis of adipose tissue in meat samples using **SYBR Gold + Eosin** or **ECM channel** fluorescent staining. The dual-model pipeline first classifies tiles as adipose/non-adipose, then performs detailed pixel-level segmentation for quantitative morphology analysis.
 
 **Key Applications:**
-- Automated adipocyte size and density measurements
-- Meat quality assessment and grading
-- Research into fat distribution patterns
-- High-throughput tissue analysis
+- Adipose tissue distribution mapping in meat samples
+- High-throughput histological analysis
+- Transfer learning demonstration for tissue-specific deep learning
 
 ---
 
 ## 📊 Current Status
 
 ### ✅ Completed
-- **Dataset Pipeline**: Comprehensive preprocessing with optional stain normalization
-- **Training Framework**: TF2.13-compatible U-Net with reproducible training
-- **Evaluation System**: Multi-checkpoint evaluation with test-time augmentation
-- **Test Set Isolation**: Separate test directory ensuring no data leakage
-- **Quality Control**: Automated blur detection, white tile filtering, confidence scoring
-- **Visualization Tools**: Model comparison plots and performance tracking
+- **Dual-Model Architecture**: Classification (InceptionV3) + Segmentation (U-Net) pipelines
+- **Dataset Pipeline**: Automated preprocessing with stain normalization, quality filtering, test isolation
+- **Training Framework**: TF2.13 two-phase fine-tuning with reproducible seeding
+- **Evaluation System**: Test-time augmentation (TTA), sliding window inference, comprehensive metrics
+- **Quality Control**: Blur detection, white tile filtering, confidence scoring, bubble subtraction
+- **Visualization**: WSI reconstruction with color-coded overlays, checkpoint comparison plots
+- **Documentation**: Complete usage examples for all 21 scripts across Classification, Segmentation, and preprocessing
 
 ### 🔄 In Progress
-- Dataset builds with various preprocessing configurations
-- Model training and hyperparameter optimization
-- Comprehensive evaluation across checkpoints
+- Training U-Net segmentation on latest dataset with 75% tile overlap
+- Training InceptionV3 classifier on Luci ECM dataset with 50% overlap
+- Training InceptionV3 classifier on MS ECM dataset (pending dataset creation)
+- Hyperparameter optimization and cross-validation
 
 ### 📋 Roadmap
-- Enhanced visualization of segmentation results
-- Batch inference pipeline for new samples
-- Integration with downstream morphology analysis tools
+- Automated batch inference pipeline for production deployment
+- Integration with downstream morphometry analysis tools
+- Multi-channel fusion (ECM + pseudocolored) for enhanced segmentation
 
 ---
 
@@ -44,32 +49,60 @@ Develop an automated pipeline for quantifying adipocyte morphology in meat tissu
 
 ```
 adipose_tissue-unet/
-├── build_dataset.py              # Main dataset builder with stain normalization
-├── build_test_dataset.py         # Test-specific dataset builder
-├── train_adipose_unet_2.py       # TF2 training script
-├── full_evaluation.py            # Comprehensive checkpoint evaluation
-├── full_evaluation_enhanced.py   # Enhanced evaluation with TTA
-├── evaluate_all_checkpoints.py   # Batch checkpoint evaluation
-├── visualize_checkpoint_metrics.py # Training progress visualization
-├── analyze_test_set_sources.py   # Test set composition analysis
-├── run_complete_pipeline.sh      # End-to-end pipeline automation
-├── seed.csv                      # Random seed for reproducibility
-├── PIPELINE_README.md            # Detailed pipeline documentation
+├── Classification/               # InceptionV3 tile classifier pipeline
+│   ├── build_class_dataset.py    # Binary dataset builder (adipose/not-adipose)
+│   ├── build_test_class_dataset.py
+│   ├── train_adipose_classifier_v0.py  # Transfer learning trainer
+│   ├── eval_adipose_classifier.py      # Evaluation with ROC/PR curves
+│   ├── classification_inference.py     # Single/batch inference
+│   └── reconstruct_wsi_classification.py  # WSI visualization (TP/FP/FN/TN)
+│
+├── Segmentation/                 # U-Net segmentation pipeline (root-level scripts)
+│   ├── build_dataset.py          # Dataset builder with stain normalization
+│   ├── build_test_dataset.py     # Test-specific dataset builder
+│   ├── train_adipose_unet_2.py   # Two-phase U-Net training (TF2.13)
+│   ├── train_adipose_unet_3.py   # Alternative training with advanced features
+│   ├── full_evaluation_enhanced.py    # TTA + sliding window evaluation
+│   ├── evaluate_all_checkpoints.py    # Batch checkpoint comparison
+│   ├── segmentation_inference.py      # Single/batch tile inference
+│   ├── reconstruct_full_images.py     # WSI reassembly with blending
+│   └── visualize_checkpoint_metrics.py
+│
+├── tools/                        # Preprocessing utilities
+│   ├── large_wsi_to_small_wsi_Lucy.py  # Grid-based WSI tiling
+│   ├── large_wsi_to_small_wsi_MS.py    # Adaptive WSI tiling
+│   ├── preprocess_small_MS_SIMs.py     # ECM channel preprocessing (FFT)
+│   ├── ECM_scaling.py                  # Dimension matching
+│   ├── compare_pseudocolored_ecm_tiles.py
+│   ├── export_classification_to_onnx.py
+│   ├── export_segmentation_to_onnx.py
+│   └── convert_tif_to_jpg.py
 │
 ├── src/
-│   ├── models/
-│   │   ├── adipocyte_unet.py     # TF2.13 U-Net implementation
-│   │   └── clr_callback.py       # Cyclic learning rate scheduler
 │   └── utils/
-│       ├── data.py               # Data loading and augmentation
+│       ├── data.py               # Augmentation pipeline (light/moderate/heavy)
+│       ├── model.py              # Metrics (Dice, IoU, BCE+Dice loss)
 │       ├── runtime.py            # TF2 GPU configuration
-│       ├── seed_utils.py         # Reproducible random seed management
-│       ├── stain_normalization.py # SYBR Gold + Eosin normalization
+│       ├── seed_utils.py         # Centralized seeding (seed.csv)
+│       ├── stain_normalization.py # Reinhard LAB normalization
 │       └── stain_reference_metadata.json
 │
-├── checkpoints/                  # Model checkpoints (not in git)
-├── adipocyte_legacy_files/       # Original implementation (archived)
-└── tools/                        # Utility scripts
+├── data/                         # Dataset storage
+│   ├── Meat_Luci_Tulane/         # Pseudocolored training data
+│   │   ├── Pseudocolored/
+│   │   ├── Masks/{fat,bubbles,muscle}/
+│   │   ├── _build_YYYYMMDD_HHMMSS/    # Timestamped builds
+│   │   └── Classification_Build_*/
+│   └── Meat_MS_Tulane/           # ECM channel data
+│       └── ECM_channel/
+│
+├── checkpoints/                  # Model weights (not in git)
+│   ├── 20251104_152203_adipose_sybreosin_1024_finetune/  # U-Net
+│   └── classifier_runs/          # InceptionV3
+│
+├── seed.csv                      # Global random seed (865)
+├── run_complete_pipeline.sh      # End-to-end automation
+└── PIPELINE_README.md            # Detailed pipeline documentation
 ```
 
 ---
@@ -98,66 +131,26 @@ pip install matplotlib seaborn pandas tqdm
 python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
 ```
 
-### Dataset Preparation
+### Complete Workflows
 
-**1. Build training/validation dataset with stain normalization:**
+For detailed step-by-step instructions with all parameters and outputs, see the **Classification Pipeline** and **Segmentation Pipeline** sections below.
+
+**Quick Classification Workflow:**
 ```bash
-python build_dataset.py \
-  --stain-normalize \
-  --target-mask fat \
-  --subtract --subtract-class bubbles \
-  --min-mask-ratio 0.05 \
-  --stride 1024
+# 1. Build dataset → 2. Train → 3. Evaluate → 4. Reconstruct WSI
+python Classification/build_class_dataset.py --data-root data/Meat_Luci_Tulane --stain-normalize
+python Classification/train_adipose_classifier_v0.py --dataset-root <build_dir>
+python Classification/eval_adipose_classifier.py --weights <checkpoint> --tta-mode full
+python Classification/reconstruct_wsi_classification.py --predictions <csv> --image-dir <wsi_dir>
 ```
 
-**2. Build dataset without stain normalization:**
+**Quick Segmentation Workflow:**
 ```bash
-python build_dataset.py \
-  --no-stain-normalize \
-  --target-mask fat \
-  --subtract --subtract-class bubbles \
-  --min-mask-ratio 0.05
-```
-
-**Key Parameters:**
-- `--stain-normalize`: Apply SYBR Gold + Eosin color correction
-- `--subtract`: Remove bubble annotations from fat masks
-- `--min-mask-ratio`: Minimum mask coverage (default: 0.05 = 5%)
-- `--stride`: Tile stride for overlapping/non-overlapping tiles
-- `--white-ratio`, `--blur-th`: Quality filtering thresholds
-
-Output: `~/Data_for_ML/Meat_Luci_Tulane/_build_YYYYMMDD_HHMMSS/`
-
-### Training
-
-```bash
-python train_adipose_unet_2.py \
-  --build-dir ~/Data_for_ML/Meat_Luci_Tulane/_build_20251104_152203 \
-  --epochs 100 \
-  --batch-size 8
-```
-
-**Features:**
-- Automatic mixed-precision training
-- Cyclic learning rate scheduling
-- Data augmentation (rotation, flip, intensity)
-- Checkpointing with early stopping
-- TensorBoard logging
-
-### Evaluation
-
-**Single checkpoint evaluation:**
-```bash
-python full_evaluation.py \
-  --checkpoint checkpoints/checkpoint_20251104_120000/weights.h5 \
-  --test-dir ~/Data_for_ML/Meat_Luci_Tulane/_build_20251104_152203/dataset/test
-```
-
-**Batch evaluation across all checkpoints:**
-```bash
-python evaluate_all_checkpoints.py \
-  --checkpoints-dir checkpoints/ \
-  --test-dir ~/Data_for_ML/Meat_Luci_Tulane/_build_20251104_152203/dataset/test
+# 1. Build dataset → 2. Train → 3. Evaluate → 4. Reconstruct WSI
+python build_dataset.py --data-root data/Meat_Luci_Tulane --stain-normalize --target-mask fat --subtract
+python train_adipose_unet_2.py --data-root <build_dir> --epochs-phase1 50 --epochs-phase2 100
+python full_evaluation_enhanced.py --weights <checkpoint> --use-tta --tta-mode full
+python reconstruct_full_images.py --predictions-dir <pred_dir> --original-wsi <wsi_path>
 ```
 
 ---
